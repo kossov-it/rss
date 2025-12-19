@@ -50,37 +50,62 @@ function decodeHtmlEntities(str) {
   return result;
 }
 
-// Clean extracted text content
-function cleanTextContent(text) {
+// Clean extracted text content - improved filtering
+function cleanTextContent(text, title = '') {
   if (!text) return null;
 
   let lines = text.split('\n');
 
-  // Remove lines that are just URLs, emails, phone numbers, or metadata
+  // Patterns to skip
+  const skipPatterns = [
+    /^https?:\/\/\S+$/,                          // URLs only
+    /[\w.-]+@[\w.-]+\.\w+/,                       // Contains email
+    /^\+?\d[\d\s\-\(\)]{6,20}$/,                  // Phone numbers
+    /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})/,          // ISO dates
+    /^\d{2}:\d{2}\s*(GMT|UTC|[A-Z]{3})/,         // Time with timezone
+    /^(Updated|Published):/i,                     // Metadata labels
+    /Sputnik International/i,                     // News agency names
+    /Rossiya Segodnya/i,
+    /РИА Новости/i,
+    /feedback@/i,
+    /MIA\s*[„"]/i,
+    /^[a-z]{2}_[A-Z]{2}$/,                        // Locale codes like en_EN
+    /^News$/i,
+    /^\d{4}$/,                                    // Just a year
+    /^(world|russia|ukraine|usa|europe)$/i,       // Single tag words
+  ];
+
+  // Filter lines
   lines = lines.filter(line => {
     const trimmed = line.trim();
     if (!trimmed) return false;
+    if (trimmed.length < 15) return false;
 
-    // Skip lines that are just URLs
-    if (/^https?:\/\/\S+$/.test(trimmed)) return false;
+    // Check skip patterns
+    for (const pattern of skipPatterns) {
+      if (pattern.test(trimmed)) return false;
+    }
 
-    // Skip lines that look like email addresses
-    if (/^[\w.-]+@[\w.-]+\.\w+$/.test(trimmed)) return false;
+    // Skip if line is just the title repeated
+    if (title && trimmed.toLowerCase() === title.toLowerCase()) return false;
 
-    // Skip lines that are just phone numbers
-    if (/^[\d\s\-\+\(\)]{7,20}$/.test(trimmed)) return false;
-
-    // Skip lines that are just dates in various formats
-    if (/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2})?/.test(trimmed)) return false;
-
-    // Skip very short lines (likely navigation/UI elements)
-    if (trimmed.length < 10) return false;
+    // Skip lines that are mostly non-letter characters (likely metadata)
+    const letterRatio = (trimmed.match(/[a-zA-Zа-яА-ЯёЁäöüÄÖÜß]/g) || []).length / trimmed.length;
+    if (letterRatio < 0.5 && trimmed.length < 50) return false;
 
     return true;
   });
 
   // Remove duplicate consecutive lines
   lines = lines.filter((line, i) => i === 0 || line.trim() !== lines[i-1].trim());
+
+  // Also remove near-duplicates (first 50 chars match)
+  lines = lines.filter((line, i) => {
+    if (i === 0) return true;
+    const curr = line.trim().substring(0, 50);
+    const prev = lines[i-1].trim().substring(0, 50);
+    return curr !== prev;
+  });
 
   // Join and clean up
   let cleaned = lines.join('\n\n').trim();
@@ -100,6 +125,23 @@ function cleanTextContent(text) {
     .join('\n');
 
   return paragraphs;
+}
+
+// Extract first real article URL from Google News content
+function extractGoogleNewsArticleUrl(content) {
+  if (!content) return null;
+
+  // Google News content contains <a href="..."> links to actual articles
+  // The first link after news.google.com redirect is usually the main source
+  const matches = content.match(/href="(https?:\/\/(?!news\.google\.com)[^"]+)"/g);
+  if (matches && matches.length > 0) {
+    // Extract URL from first match
+    const urlMatch = matches[0].match(/href="([^"]+)"/);
+    if (urlMatch) {
+      return urlMatch[1];
+    }
+  }
+  return null;
 }
 
 function fetchUrl(url, maxRedirects = 5) {
@@ -170,7 +212,7 @@ async function fetchWithRetry(url, retries = 1) {
 }
 
 // Extract article content using Readability - with retry
-async function extractArticleContent(url, retries = 1) {
+async function extractArticleContent(url, title = '', retries = 1) {
   try {
     const html = await fetchUrl(url);
 
@@ -185,7 +227,7 @@ async function extractArticleContent(url, retries = 1) {
     const document = dom.window.document;
 
     // Remove script, style, nav, footer, aside elements before parsing
-    const removeSelectors = ['script', 'style', 'nav', 'footer', 'aside', 'header', '.advertisement', '.ad', '.social-share', '.comments'];
+    const removeSelectors = ['script', 'style', 'nav', 'footer', 'aside', 'header', '.advertisement', '.ad', '.social-share', '.comments', '.related-articles', '.sidebar'];
     removeSelectors.forEach(sel => {
       document.querySelectorAll(sel).forEach(el => el.remove());
     });
@@ -197,8 +239,8 @@ async function extractArticleContent(url, retries = 1) {
     const article = reader.parse();
 
     if (article && article.textContent) {
-      // Use textContent (plain text) and clean it - no images, no metadata
-      const cleaned = cleanTextContent(article.textContent);
+      // Use textContent (plain text) and clean it - pass title for dedup
+      const cleaned = cleanTextContent(article.textContent, title);
       return cleaned;
     }
 
@@ -206,7 +248,7 @@ async function extractArticleContent(url, retries = 1) {
   } catch (err) {
     if (retries > 0) {
       await new Promise(r => setTimeout(r, 500));
-      return extractArticleContent(url, retries - 1);
+      return extractArticleContent(url, title, retries - 1);
     }
     return null;
   }
@@ -237,6 +279,7 @@ function extractTitle(item) {
 function parseRSS(xml, feedTitle) {
   const parsed = parser.parse(xml);
   const items = [];
+  const isGoogleNews = feedTitle.toLowerCase().includes('google news');
 
   // RSS 2.0
   if (parsed.rss?.channel?.item) {
@@ -245,11 +288,22 @@ function parseRSS(xml, feedTitle) {
       : [parsed.rss.channel.item];
 
     for (const item of feedItems.slice(0, config.articlesPerFeed)) {
+      const content = extractContent(item);
+      let link = item.link;
+
+      // For Google News, extract real article URL from content
+      if (isGoogleNews) {
+        const realUrl = extractGoogleNewsArticleUrl(content);
+        if (realUrl) {
+          link = realUrl;
+        }
+      }
+
       items.push({
         id: item.guid?.['#text'] || item.guid || item.link || Math.random().toString(36),
         title: extractTitle(item),
-        link: item.link,
-        content: extractContent(item),
+        link,
+        content,
         date: parseDate(item.pubDate),
         feedTitle
       });
@@ -360,7 +414,7 @@ async function main() {
         }
 
         try {
-          const fullContent = await extractArticleContent(item.link);
+          const fullContent = await extractArticleContent(item.link, item.title);
           if (fullContent) {
             item.fullContent = fullContent;
             extracted++;
