@@ -42,7 +42,7 @@
     .header-right {
       display: flex;
       align-items: center;
-      gap: 15px;
+      gap: 10px;
     }
 
     .updated {
@@ -71,13 +71,13 @@
     .tab:hover { background: #30363d; }
     .tab.active { background: #238636; border-color: #238636; color: #fff; }
 
-    /* Category visibility - CSS-based toggle for instant switching */
-    .feed-group { display: none; margin-bottom: 25px; }
-    .feed-group[data-category] { display: block; }
-    body.filter-all .feed-group { display: block; }
-    body.filter-News .feed-group[data-category="News"] { display: block; }
-    body.filter-Tech .feed-group[data-category="Tech"] { display: block; }
-    body:not(.filter-all):not(.filter-News):not(.filter-Tech) .feed-group { display: none; }
+    .feed-group {
+      margin-bottom: 25px;
+    }
+
+    .feed-group.hidden {
+      display: none;
+    }
 
     .feed-header {
       display: flex;
@@ -118,15 +118,43 @@
 
     .feed-count {
       font-size: 0.75rem;
-      color: #6e7681;
-      background: #21262d;
+      color: #c9d1d9;
+      background: #238636;
       padding: 2px 8px;
       border-radius: 10px;
+      min-width: 20px;
+      text-align: center;
+    }
+
+    .feed-count.all-read {
+      background: #21262d;
+      color: #6e7681;
+    }
+
+    .feed-header-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
     }
 
     .feed-error {
       color: #f85149;
       font-size: 0.8rem;
+    }
+
+    .feed-mark-read {
+      padding: 4px 10px;
+      background: #21262d;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      color: #c9d1d9;
+      cursor: pointer;
+      font-size: 0.75rem;
+      transition: all 0.15s;
+    }
+
+    .feed-mark-read:hover {
+      background: #30363d;
     }
 
     .feed-articles {
@@ -197,7 +225,6 @@
 
     .article-content p { margin-bottom: 10px; }
 
-    /* Fix list display - restore proper list styling */
     .article-content ul,
     .article-content ol {
       margin: 10px 0;
@@ -235,7 +262,7 @@
       color: #6e7681;
     }
 
-    .mark-all {
+    .btn {
       padding: 6px 12px;
       background: #21262d;
       border: 1px solid #30363d;
@@ -243,9 +270,10 @@
       color: #c9d1d9;
       cursor: pointer;
       font-size: 0.8rem;
+      transition: all 0.15s;
     }
 
-    .mark-all:hover { background: #30363d; }
+    .btn:hover { background: #30363d; }
 
     .no-items {
       color: #6e7681;
@@ -254,13 +282,14 @@
     }
   </style>
 </head>
-<body class="filter-all">
+<body>
   <div class="container">
     <header>
       <h1>RSS Reader</h1>
       <div class="header-right">
         <span class="updated" id="updated"></span>
-        <button class="mark-all" id="markAll">Mark all as read</button>
+        <button class="btn" id="markAll">Mark all as read</button>
+        <button class="btn" id="reload" title="Reload feeds">↻</button>
       </div>
     </header>
 
@@ -273,7 +302,6 @@
 
   <script>
     const STORAGE_KEY = 'rss-reader-read';
-    const COLLAPSED_KEY = 'rss-reader-collapsed';
     let data = null;
     let activeCategory = 'all';
 
@@ -294,37 +322,58 @@
       return !!getRead()[id];
     }
 
-    function getCollapsed() {
-      try {
-        return JSON.parse(localStorage.getItem(COLLAPSED_KEY)) || {};
-      } catch { return {}; }
-    }
-
-    function setCollapsed(feedTitle, collapsed) {
-      const state = getCollapsed();
-      if (collapsed) {
-        state[feedTitle] = true;
-      } else {
-        delete state[feedTitle];
-      }
-      localStorage.setItem(COLLAPSED_KEY, JSON.stringify(state));
-    }
-
-    function isCollapsed(feedTitle) {
-      return !!getCollapsed()[feedTitle];
-    }
-
     function markAllRead() {
       const read = getRead();
-      document.querySelectorAll('.article:not(.read)').forEach(el => {
+      document.querySelectorAll('.feed-group:not(.hidden) .article:not(.read)').forEach(el => {
         const id = el.dataset.id;
-        if (id && el.offsetParent !== null) { // Only visible articles
+        if (id) {
           read[id] = Date.now();
           el.classList.add('read');
         }
       });
       const entries = Object.entries(read).sort((a, b) => b[1] - a[1]).slice(0, 5000);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(Object.fromEntries(entries)));
+      updateAllUnreadCounts();
+    }
+
+    function markFeedRead(feedTitle) {
+      const read = getRead();
+      const feedGroup = document.querySelector(`.feed-group[data-feed="${CSS.escape(feedTitle)}"]`);
+      if (feedGroup) {
+        feedGroup.querySelectorAll('.article:not(.read)').forEach(el => {
+          const id = el.dataset.id;
+          if (id) {
+            read[id] = Date.now();
+            el.classList.add('read');
+          }
+        });
+      }
+      const entries = Object.entries(read).sort((a, b) => b[1] - a[1]).slice(0, 5000);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(Object.fromEntries(entries)));
+      updateUnreadCount(feedTitle);
+    }
+
+    function getUnreadCount(feedItems) {
+      return feedItems.filter(item => !isRead(item.id)).length;
+    }
+
+    function updateUnreadCount(feedTitle) {
+      const feedGroup = document.querySelector(`.feed-group[data-feed="${CSS.escape(feedTitle)}"]`);
+      if (feedGroup) {
+        const countEl = feedGroup.querySelector('.feed-count');
+        const unread = feedGroup.querySelectorAll('.article:not(.read)').length;
+        countEl.textContent = unread;
+        countEl.classList.toggle('all-read', unread === 0);
+      }
+    }
+
+    function updateAllUnreadCounts() {
+      document.querySelectorAll('.feed-group').forEach(feedGroup => {
+        const countEl = feedGroup.querySelector('.feed-count');
+        const unread = feedGroup.querySelectorAll('.article:not(.read)').length;
+        countEl.textContent = unread;
+        countEl.classList.toggle('all-read', unread === 0);
+      });
     }
 
     function formatDate(ts) {
@@ -353,12 +402,21 @@
 
     function switchCategory(category) {
       activeCategory = category;
+
       // Update tab styling
       document.querySelectorAll('.tab').forEach(tab => {
         tab.classList.toggle('active', tab.dataset.category === category);
       });
-      // Update body class for CSS-based filtering (instant!)
-      document.body.className = `filter-${category}`;
+
+      // Show/hide feed groups based on category
+      document.querySelectorAll('.feed-group').forEach(group => {
+        const groupCategory = group.dataset.category;
+        if (category === 'all' || groupCategory === category) {
+          group.classList.remove('hidden');
+        } else {
+          group.classList.add('hidden');
+        }
+      });
     }
 
     function renderContent() {
@@ -367,17 +425,21 @@
 
       for (const category of data.categories) {
         for (const feed of category.feeds) {
-          const collapsedClass = isCollapsed(feed.title) ? 'collapsed' : '';
-          const itemCount = feed.items.length;
+          const unreadCount = getUnreadCount(feed.items);
+          const allReadClass = unreadCount === 0 ? 'all-read' : '';
 
-          html += `<div class="feed-group ${collapsedClass}" data-category="${category.name}" data-feed="${escapeHtml(feed.title)}">`;
+          // All feeds collapsed by default
+          html += `<div class="feed-group collapsed" data-category="${category.name}" data-feed="${escapeHtml(feed.title)}">`;
           html += `<div class="feed-header">
             <div class="feed-header-left">
               <span class="feed-toggle">▼</span>
               <span class="feed-title">${escapeHtml(feed.title)}</span>
-              <span class="feed-count">${itemCount}</span>
+              <span class="feed-count ${allReadClass}">${unreadCount}</span>
             </div>
-            ${feed.error ? `<span class="feed-error">⚠ ${escapeHtml(feed.error)}</span>` : ''}
+            <div class="feed-header-right">
+              ${feed.error ? `<span class="feed-error">⚠ ${escapeHtml(feed.error)}</span>` : ''}
+              <button class="feed-mark-read" data-feed="${escapeHtml(feed.title)}">Mark read</button>
+            </div>
           </div>`;
 
           html += `<div class="feed-articles">`;
@@ -410,12 +472,29 @@
 
       // Add feed header click handlers (collapse/expand)
       content.querySelectorAll('.feed-header').forEach(header => {
-        header.addEventListener('click', () => {
+        header.addEventListener('click', (e) => {
+          // Don't toggle if clicking the mark read button
+          if (e.target.classList.contains('feed-mark-read')) return;
+
           const feedGroup = header.parentElement;
-          const feedTitle = feedGroup.dataset.feed;
-          const isNowCollapsed = !feedGroup.classList.contains('collapsed');
+          const isCollapsing = !feedGroup.classList.contains('collapsed');
+
+          // If collapsing, also close any open article
+          if (isCollapsing) {
+            feedGroup.querySelectorAll('.article-content.open').forEach(el => {
+              el.classList.remove('open');
+            });
+          }
+
           feedGroup.classList.toggle('collapsed');
-          setCollapsed(feedTitle, isNowCollapsed);
+        });
+      });
+
+      // Add feed mark read button handlers
+      content.querySelectorAll('.feed-mark-read').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          markFeedRead(btn.dataset.feed);
         });
       });
 
@@ -426,6 +505,8 @@
           const article = header.parentElement;
           const contentEl = article.querySelector('.article-content');
           const id = article.dataset.id;
+          const feedGroup = article.closest('.feed-group');
+          const feedTitle = feedGroup.dataset.feed;
 
           const isOpen = contentEl.classList.contains('open');
 
@@ -434,8 +515,11 @@
 
           if (!isOpen) {
             contentEl.classList.add('open');
-            article.classList.add('read');
-            setRead(id);
+            if (!article.classList.contains('read')) {
+              article.classList.add('read');
+              setRead(id);
+              updateUnreadCount(feedTitle);
+            }
           }
         });
       });
@@ -482,6 +566,7 @@
         });
 
         document.getElementById('markAll').addEventListener('click', markAllRead);
+        document.getElementById('reload').addEventListener('click', () => location.reload());
       } catch (err) {
         document.getElementById('content').innerHTML = `
           <div class="loading">
