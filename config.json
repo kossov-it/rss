@@ -1,5 +1,6 @@
 {
   "articlesPerFeed": 20,
+  "fetchFullText": true,
   "categories": [
     {
       "name": "News",
