@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RSS Reader</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0d1117;
+      color: #c9d1d9;
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+    
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      padding-bottom: 15px;
+      border-bottom: 1px solid #21262d;
+    }
+    
+    h1 {
+      font-size: 1.4rem;
+      font-weight: 600;
+      color: #f0f6fc;
+    }
+    
+    .updated {
+      font-size: 0.8rem;
+      color: #6e7681;
+    }
+    
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    
+    .tab {
+      padding: 8px 16px;
+      background: #21262d;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.9rem;
+      color: #c9d1d9;
+      transition: all 0.15s;
+    }
+    
+    .tab:hover { background: #30363d; }
+    .tab.active { background: #238636; border-color: #238636; color: #fff; }
+    
+    .feed-group {
+      margin-bottom: 30px;
+    }
+    
+    .feed-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid #21262d;
+      margin-bottom: 10px;
+    }
+    
+    .feed-title {
+      font-size: 1rem;
+      font-weight: 600;
+      color: #58a6ff;
+    }
+    
+    .feed-error {
+      color: #f85149;
+      font-size: 0.8rem;
+    }
+    
+    .article {
+      border: 1px solid #21262d;
+      border-radius: 6px;
+      margin-bottom: 8px;
+      overflow: hidden;
+    }
+    
+    .article-header {
+      padding: 12px 15px;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 15px;
+      transition: background 0.15s;
+    }
+    
+    .article-header:hover { background: #161b22; }
+    
+    .article-title {
+      font-size: 0.95rem;
+      color: #c9d1d9;
+      flex: 1;
+    }
+    
+    .article.read .article-title {
+      color: #6e7681;
+    }
+    
+    .article-meta {
+      font-size: 0.75rem;
+      color: #6e7681;
+      white-space: nowrap;
+    }
+    
+    .article-content {
+      display: none;
+      padding: 15px;
+      background: #161b22;
+      border-top: 1px solid #21262d;
+      font-size: 0.9rem;
+      overflow-x: auto;
+    }
+    
+    .article-content.open { display: block; }
+    
+    .article-content img {
+      max-width: 100%;
+      height: auto;
+      border-radius: 4px;
+    }
+    
+    .article-content a {
+      color: #58a6ff;
+    }
+    
+    .article-content p { margin-bottom: 10px; }
+    
+    .article-link {
+      display: inline-block;
+      margin-top: 10px;
+      padding: 6px 12px;
+      background: #21262d;
+      border-radius: 4px;
+      color: #58a6ff;
+      text-decoration: none;
+      font-size: 0.85rem;
+    }
+    
+    .article-link:hover { background: #30363d; }
+    
+    .loading {
+      text-align: center;
+      padding: 60px;
+      color: #6e7681;
+    }
+    
+    .mark-all {
+      padding: 6px 12px;
+      background: #21262d;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      color: #c9d1d9;
+      cursor: pointer;
+      font-size: 0.8rem;
+    }
+    
+    .mark-all:hover { background: #30363d; }
+    
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>📰 RSS Reader</h1>
+      <span class="updated" id="updated"></span>
+    </header>
+    
+    <div class="tabs" id="tabs"></div>
+    <button class="mark-all" id="markAll">Mark all as read</button>
+    
+    <main id="content">
+      <div class="loading">Loading feeds...</div>
+    </main>
+  </div>
+
+  <script>
+    const STORAGE_KEY = 'rss-reader-read';
+    let data = null;
+    let activeCategory = 'all';
+    
+    function getRead() {
+      try {
+        return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {};
+      } catch { return {}; }
+    }
+    
+    function setRead(id) {
+      const read = getRead();
+      read[id] = Date.now();
+      // Keep only last 5000 entries to prevent localStorage bloat
+      const entries = Object.entries(read).sort((a, b) => b[1] - a[1]).slice(0, 5000);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(Object.fromEntries(entries)));
+    }
+    
+    function isRead(id) {
+      return !!getRead()[id];
+    }
+    
+    function markAllRead() {
+      const read = getRead();
+      document.querySelectorAll('.article:not(.read)').forEach(el => {
+        const id = el.dataset.id;
+        if (id) {
+          read[id] = Date.now();
+          el.classList.add('read');
+        }
+      });
+      const entries = Object.entries(read).sort((a, b) => b[1] - a[1]).slice(0, 5000);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(Object.fromEntries(entries)));
+    }
+    
+    function formatDate(ts) {
+      if (!ts) return '';
+      const d = new Date(ts);
+      const now = new Date();
+      const diff = now - d;
+      
+      if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
+      if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
+      if (diff < 604800000) return Math.floor(diff / 86400000) + 'd ago';
+      
+      return d.toLocaleDateString();
+    }
+    
+    function renderTabs() {
+      const tabs = document.getElementById('tabs');
+      const categories = ['all', ...data.categories.map(c => c.name)];
+      
+      tabs.innerHTML = categories.map(cat => `
+        <button class="tab ${cat === activeCategory ? 'active' : ''}" data-category="${cat}">
+          ${cat === 'all' ? 'All' : cat}
+        </button>
+      `).join('');
+      
+      tabs.addEventListener('click', e => {
+        if (e.target.classList.contains('tab')) {
+          activeCategory = e.target.dataset.category;
+          renderTabs();
+          renderContent();
+        }
+      });
+    }
+    
+    function renderContent() {
+      const content = document.getElementById('content');
+      const categories = activeCategory === 'all' 
+        ? data.categories 
+        : data.categories.filter(c => c.name === activeCategory);
+      
+      let html = '';
+      
+      for (const category of categories) {
+        for (const feed of category.feeds) {
+          html += `<div class="feed-group">`;
+          html += `<div class="feed-header">
+            <span class="feed-title">${escapeHtml(feed.title)}</span>
+            ${feed.error ? `<span class="feed-error">⚠ ${escapeHtml(feed.error)}</span>` : ''}
+          </div>`;
+          
+          if (feed.items.length === 0 && !feed.error) {
+            html += `<p style="color:#6e7681;padding:10px 0;">No items</p>`;
+          }
+          
+          for (const item of feed.items) {
+            const readClass = isRead(item.id) ? 'read' : '';
+            html += `
+              <div class="article ${readClass}" data-id="${escapeHtml(item.id)}">
+                <div class="article-header">
+                  <span class="article-title">${escapeHtml(item.title)}</span>
+                  <span class="article-meta">${formatDate(item.date)}</span>
+                </div>
+                <div class="article-content">
+                  ${sanitizeContent(item.content) || '<p><em>No content available</em></p>'}
+                  ${item.link ? `<a href="${escapeHtml(item.link)}" target="_blank" rel="noopener noreferrer" class="article-link">Open original ↗</a>` : ''}
+                </div>
+              </div>
+            `;
+          }
+          
+          html += `</div>`;
+        }
+      }
+      
+      content.innerHTML = html;
+      
+      // Add click handlers
+      content.querySelectorAll('.article-header').forEach(header => {
+        header.addEventListener('click', () => {
+          const article = header.parentElement;
+          const contentEl = article.querySelector('.article-content');
+          const id = article.dataset.id;
+          
+          // Toggle
+          const isOpen = contentEl.classList.contains('open');
+          
+          // Close all others
+          content.querySelectorAll('.article-content.open').forEach(el => el.classList.remove('open'));
+          
+          if (!isOpen) {
+            contentEl.classList.add('open');
+            article.classList.add('read');
+            setRead(id);
+          }
+        });
+      });
+    }
+    
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function sanitizeContent(html) {
+      if (!html) return '';
+      // Sanitize HTML to prevent XSS
+      let clean = DOMPurify.sanitize(html, {
+        ALLOWED_TAGS: ['p', 'br', 'b', 'i', 'em', 'strong', 'a', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 'img', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'figure', 'figcaption', 'div', 'span'],
+        ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class'],
+        ALLOW_DATA_ATTR: false
+      });
+      // Add lazy loading and safe attributes to images
+      clean = clean.replace(/<img /g, '<img loading="lazy" ');
+      // Make all links open in new tab safely
+      clean = clean.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ');
+      return clean;
+    }
+    
+    async function init() {
+      try {
+        const res = await fetch('data/feeds.json');
+        if (!res.ok) throw new Error('Failed to load feeds');
+        data = await res.json();
+        
+        document.getElementById('updated').textContent = 
+          'Updated: ' + new Date(data.lastUpdated).toLocaleString();
+        
+        renderTabs();
+        renderContent();
+        
+        document.getElementById('markAll').addEventListener('click', markAllRead);
+      } catch (err) {
+        document.getElementById('content').innerHTML = `
+          <div class="loading">
+            Failed to load feeds. Run the GitHub Action first to generate data/feeds.json
+          </div>
+        `;
+      }
+    }
+    
+    init();
+  </script>
+</body>
+</html>

@@ -1,0 +1,38 @@
+{
+  "articlesPerFeed": 20,
+  "categories": [
+    {
+      "name": "News",
+      "feeds": [
+        { "title": "Google News DE", "url": "https://news.google.com/rss?hl=de&gl=DE&ceid=DE:de" },
+        { "title": "Google News RU", "url": "https://news.google.com/rss?hl=ru&gl=RU&ceid=RU:ru" },
+        { "title": "RIA Novosti", "url": "https://ria.ru/export/rss2/index.xml?page_type=google_newsstand" },
+        { "title": "Sputnik", "url": "https://sputnikglobe.com/export/rss2/archive/index.xml" },
+        { "title": "RT", "url": "https://rt.com/rss" }
+      ]
+    },
+    {
+      "name": "Tech",
+      "feeds": [
+        { "title": "Ars Technica", "url": "http://feeds.arstechnica.com/arstechnica/BAaf" },
+        { "title": "Hacker News", "url": "https://news.ycombinator.com/rss" },
+        { "title": "Golem.de", "url": "https://rss.golem.de/rss.php?feed=RSS2.0" },
+        { "title": "MacTechNews", "url": "https://www.mactechnews.de/Rss/News.x" },
+        { "title": "Heise Mac & i", "url": "https://www.heise.de/mac-and-i/feed.xml" },
+        { "title": "TechStage", "url": "https://www.techstage.de/rss.xml" },
+        { "title": "Telepolis", "url": "https://www.telepolis.de/news-atom.xml" },
+        { "title": "Heise", "url": "https://www.heise.de/rss/heise-atom.xml" },
+        { "title": "Heise IT", "url": "https://www.heise.de/rss/heise-Rubrik-IT-atom.xml" },
+        { "title": "Heise Wissen", "url": "https://www.heise.de/rss/heise-Rubrik-Wissen-atom.xml" },
+        { "title": "Heise Mobiles", "url": "https://www.heise.de/rss/heise-Rubrik-Mobiles-atom.xml" },
+        { "title": "Heise Entertainment", "url": "https://www.heise.de/rss/heise-Rubrik-Entertainment-atom.xml" },
+        { "title": "Heise Netzpolitik", "url": "https://www.heise.de/rss/heise-Rubrik-Netzpolitik-atom.xml" },
+        { "title": "Heise Wirtschaft", "url": "https://www.heise.de/rss/heise-Rubrik-Wirtschaft-atom.xml" },
+        { "title": "Heise Journal", "url": "https://www.heise.de/rss/heise-Rubrik-Journal-atom.xml" },
+        { "title": "Heise Top", "url": "https://www.heise.de/rss/heise-top-atom.xml" },
+        { "title": "Heise iMonitor", "url": "https://www.heise.de/netze/netzwerk-tools/imonitor-internet-stoerungen/feed/aktuelle-meldungen/" },
+        { "title": "Heise Tipps & Tricks", "url": "https://www.heise.de/tipps-tricks/feed.xml" }
+      ]
+    }
+  ]
+}
