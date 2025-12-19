@@ -50,6 +50,58 @@ function decodeHtmlEntities(str) {
   return result;
 }
 
+// Clean extracted text content
+function cleanTextContent(text) {
+  if (!text) return null;
+
+  let lines = text.split('\n');
+
+  // Remove lines that are just URLs, emails, phone numbers, or metadata
+  lines = lines.filter(line => {
+    const trimmed = line.trim();
+    if (!trimmed) return false;
+
+    // Skip lines that are just URLs
+    if (/^https?:\/\/\S+$/.test(trimmed)) return false;
+
+    // Skip lines that look like email addresses
+    if (/^[\w.-]+@[\w.-]+\.\w+$/.test(trimmed)) return false;
+
+    // Skip lines that are just phone numbers
+    if (/^[\d\s\-\+\(\)]{7,20}$/.test(trimmed)) return false;
+
+    // Skip lines that are just dates in various formats
+    if (/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2})?/.test(trimmed)) return false;
+
+    // Skip very short lines (likely navigation/UI elements)
+    if (trimmed.length < 10) return false;
+
+    return true;
+  });
+
+  // Remove duplicate consecutive lines
+  lines = lines.filter((line, i) => i === 0 || line.trim() !== lines[i-1].trim());
+
+  // Join and clean up
+  let cleaned = lines.join('\n\n').trim();
+
+  // Remove excessive whitespace
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+  cleaned = cleaned.replace(/[ \t]+/g, ' ');
+
+  // Must have at least 100 chars of actual content
+  if (cleaned.length < 100) return null;
+
+  // Convert to HTML paragraphs
+  const paragraphs = cleaned.split('\n\n')
+    .map(p => p.trim())
+    .filter(p => p.length > 0)
+    .map(p => `<p>${p}</p>`)
+    .join('\n');
+
+  return paragraphs;
+}
+
 function fetchUrl(url, maxRedirects = 5) {
   return new Promise((resolve, reject) => {
     if (maxRedirects <= 0) {
@@ -117,36 +169,38 @@ async function fetchWithRetry(url, retries = 1) {
   }
 }
 
-// Extract article content using Readability
-async function extractArticleContent(url) {
+// Extract article content using Readability - with retry
+async function extractArticleContent(url, retries = 1) {
   try {
     const html = await fetchUrl(url);
 
-    // Create JSDOM with the URL for proper relative URL resolution
-    const dom = new JSDOM(html, {
-      url: url,
-      features: {
-        FetchExternalResources: false,
-        ProcessExternalResources: false
-      }
-    });
-
+    const dom = new JSDOM(html, { url });
     const document = dom.window.document;
 
-    // Check if the page is readable
+    // Remove script, style, nav, footer, aside elements before parsing
+    const removeSelectors = ['script', 'style', 'nav', 'footer', 'aside', 'header', '.advertisement', '.ad', '.social-share', '.comments'];
+    removeSelectors.forEach(sel => {
+      document.querySelectorAll(sel).forEach(el => el.remove());
+    });
+
     const reader = new Readability(document, {
-      charThreshold: 50,  // Lower threshold to capture more content
-      keepClasses: false
+      charThreshold: 50
     });
 
     const article = reader.parse();
 
-    if (article && article.content && article.content.length > 100) {
-      return article.content;
+    if (article && article.textContent) {
+      // Use textContent (plain text) and clean it - no images, no metadata
+      const cleaned = cleanTextContent(article.textContent);
+      return cleaned;
     }
 
     return null;
   } catch (err) {
+    if (retries > 0) {
+      await new Promise(r => setTimeout(r, 500));
+      return extractArticleContent(url, retries - 1);
+    }
     return null;
   }
 }
@@ -269,7 +323,7 @@ async function main() {
 
   // If fetchFullText is enabled, extract full article content
   if (config.fetchFullText) {
-    console.log('\n\nExtracting full article content (parallel)...');
+    console.log('\n\nExtracting full article content...');
 
     // Collect all items with their references
     const allItems = [];
@@ -281,14 +335,11 @@ async function main() {
 
     console.log(`Total articles to extract: ${allItems.length}`);
 
-    // Extract ALL articles in parallel (with concurrency limit via Promise pool)
-    const concurrency = 20; // Process 20 at a time
+    // Lower concurrency for better reliability
+    const concurrency = 10;
     let extracted = 0;
     let failed = 0;
     let completed = 0;
-
-    // Create a pool of promises
-    const pool = [];
     let index = 0;
 
     const processNext = async () => {
@@ -314,7 +365,7 @@ async function main() {
         }
 
         completed++;
-        if (completed % 20 === 0 || completed === allItems.length) {
+        if (completed % 10 === 0 || completed === allItems.length) {
           process.stdout.write(`\r  Progress: ${completed}/${allItems.length} (${extracted} extracted, ${failed} failed)`);
         }
       }
@@ -329,7 +380,7 @@ async function main() {
 
     console.log(`\n  ✓ Successfully extracted ${extracted}/${allItems.length} articles`);
     if (failed > 0) {
-      console.log(`  ⚠ Failed to extract ${failed} articles (will use RSS content as fallback)`);
+      console.log(`  ⚠ ${failed} articles will use RSS summary as fallback`);
     }
   }
 
