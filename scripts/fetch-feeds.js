@@ -2,6 +2,8 @@ const fs = require('fs');
 const https = require('https');
 const http = require('http');
 const { XMLParser } = require('fast-xml-parser');
+const { Readability } = require('@mozilla/readability');
+const { JSDOM } = require('jsdom');
 
 const config = JSON.parse(fs.readFileSync('config.json', 'utf8'));
 const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
@@ -50,22 +52,27 @@ function decodeHtmlEntities(str) {
   return result;
 }
 
-function fetchUrl(url) {
+function fetchUrl(url, maxRedirects = 5) {
   return new Promise((resolve, reject) => {
+    if (maxRedirects <= 0) {
+      return reject(new Error('Too many redirects'));
+    }
+
     const client = url.startsWith('https') ? https : http;
     const req = client.get(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; RSS-Reader/1.0)',
-        'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9,de;q=0.8,ru;q=0.7',
         'Accept-Charset': 'utf-8'
       },
-      timeout: 10000
+      timeout: 15000
     }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         const redirectUrl = res.headers.location.startsWith('http')
           ? res.headers.location
           : new URL(res.headers.location, url).href;
-        return fetchUrl(redirectUrl).then(resolve).catch(reject);
+        return fetchUrl(redirectUrl, maxRedirects - 1).then(resolve).catch(reject);
       }
 
       // Collect chunks as buffers for proper encoding
@@ -110,6 +117,52 @@ async function fetchWithRetry(url, retries = 1) {
     }
     throw err;
   }
+}
+
+// Extract article content using Readability
+async function extractArticleContent(url) {
+  try {
+    const html = await fetchUrl(url);
+    const dom = new JSDOM(html, { url });
+    const reader = new Readability(dom.window.document);
+    const article = reader.parse();
+
+    if (article && article.content) {
+      return {
+        content: article.content,
+        textContent: article.textContent,
+        excerpt: article.excerpt
+      };
+    }
+    return null;
+  } catch (err) {
+    // Silently fail - we'll use RSS content as fallback
+    return null;
+  }
+}
+
+// Batch extract articles with concurrency limit
+async function extractArticlesBatch(items, concurrency = 5) {
+  const results = new Map();
+
+  for (let i = 0; i < items.length; i += concurrency) {
+    const batch = items.slice(i, i + concurrency);
+    const batchResults = await Promise.allSettled(
+      batch.map(async (item) => {
+        if (!item.link) return { id: item.id, content: null };
+        const extracted = await extractArticleContent(item.link);
+        return { id: item.id, content: extracted };
+      })
+    );
+
+    for (const result of batchResults) {
+      if (result.status === 'fulfilled' && result.value) {
+        results.set(result.value.id, result.value.content);
+      }
+    }
+  }
+
+  return results;
 }
 
 function parseDate(dateStr) {
@@ -211,6 +264,7 @@ async function main() {
   }
 
   console.log(`Total feeds: ${allFeeds.length}`);
+  console.log(`Full text extraction: ${config.fetchFullText ? 'enabled' : 'disabled'}\n`);
 
   // Fetch ALL feeds in parallel batches (10 concurrent)
   const results = [];
@@ -230,6 +284,45 @@ async function main() {
       })
     );
     results.push(...batchResults);
+  }
+
+  // If fetchFullText is enabled, extract full article content
+  if (config.fetchFullText) {
+    console.log('\n\nExtracting full article content...');
+
+    // Collect all items that need article extraction
+    const allItems = [];
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        allItems.push(...result.value.items);
+      }
+    }
+
+    console.log(`Total articles to extract: ${allItems.length}`);
+
+    // Extract articles in batches of 5 concurrent requests
+    let extracted = 0;
+    const articlesPerBatch = 10;
+
+    for (let i = 0; i < allItems.length; i += articlesPerBatch) {
+      const batch = allItems.slice(i, i + articlesPerBatch);
+      const extractedContent = await extractArticlesBatch(batch, 5);
+
+      // Update items with extracted content
+      for (const item of batch) {
+        const articleContent = extractedContent.get(item.id);
+        if (articleContent) {
+          // Store full article content, keep original RSS content as fallback
+          item.fullContent = articleContent.content;
+          extracted++;
+        }
+      }
+
+      const progress = Math.min(i + articlesPerBatch, allItems.length);
+      process.stdout.write(`\r  Progress: ${progress}/${allItems.length} (${extracted} extracted)`);
+    }
+
+    console.log(`\n  ✓ Successfully extracted ${extracted}/${allItems.length} articles`);
   }
 
   // Reassemble into categories
