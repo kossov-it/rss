@@ -174,7 +174,14 @@ async function extractArticleContent(url, retries = 1) {
   try {
     const html = await fetchUrl(url);
 
-    const dom = new JSDOM(html, { url });
+    // Create virtual console to suppress CSS parsing errors
+    const virtualConsole = new (require('jsdom').VirtualConsole)();
+    virtualConsole.on('error', () => {}); // Suppress errors
+
+    const dom = new JSDOM(html, {
+      url,
+      virtualConsole
+    });
     const document = dom.window.document;
 
     // Remove script, style, nav, footer, aside elements before parsing
