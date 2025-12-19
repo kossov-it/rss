@@ -41,12 +41,10 @@ function decodeHtmlEntities(str) {
     '&Uuml;': '\u00DC',
     '&szlig;': '\u00DF',
   };
-  // Decode named entities
   let result = str;
   for (const [entity, char] of Object.entries(entities)) {
     result = result.split(entity).join(char);
   }
-  // Decode numeric entities (&#123; or &#x7B;)
   result = result.replace(/&#(\d+);/g, (_, num) => String.fromCharCode(parseInt(num, 10)));
   result = result.replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
   return result;
@@ -75,19 +73,20 @@ function fetchUrl(url, maxRedirects = 5) {
         return fetchUrl(redirectUrl, maxRedirects - 1).then(resolve).catch(reject);
       }
 
-      // Collect chunks as buffers for proper encoding
+      if (res.statusCode >= 400) {
+        return reject(new Error(`HTTP ${res.statusCode}`));
+      }
+
       const chunks = [];
       res.on('data', chunk => chunks.push(chunk));
       res.on('end', () => {
         const buffer = Buffer.concat(chunks);
-        // Try to detect encoding from content-type header or default to UTF-8
         const contentType = res.headers['content-type'] || '';
         let encoding = 'utf-8';
         const charsetMatch = contentType.match(/charset=([^\s;]+)/i);
         if (charsetMatch) {
           encoding = charsetMatch[1].toLowerCase();
         }
-        // Convert to string with proper encoding
         let data;
         try {
           if (encoding === 'iso-8859-1' || encoding === 'latin1') {
@@ -106,7 +105,6 @@ function fetchUrl(url, maxRedirects = 5) {
   });
 }
 
-// Fetch with 1 retry on failure
 async function fetchWithRetry(url, retries = 1) {
   try {
     return await fetchUrl(url);
@@ -123,46 +121,34 @@ async function fetchWithRetry(url, retries = 1) {
 async function extractArticleContent(url) {
   try {
     const html = await fetchUrl(url);
-    const dom = new JSDOM(html, { url });
-    const reader = new Readability(dom.window.document);
+
+    // Create JSDOM with the URL for proper relative URL resolution
+    const dom = new JSDOM(html, {
+      url: url,
+      features: {
+        FetchExternalResources: false,
+        ProcessExternalResources: false
+      }
+    });
+
+    const document = dom.window.document;
+
+    // Check if the page is readable
+    const reader = new Readability(document, {
+      charThreshold: 50,  // Lower threshold to capture more content
+      keepClasses: false
+    });
+
     const article = reader.parse();
 
-    if (article && article.content) {
-      return {
-        content: article.content,
-        textContent: article.textContent,
-        excerpt: article.excerpt
-      };
+    if (article && article.content && article.content.length > 100) {
+      return article.content;
     }
+
     return null;
   } catch (err) {
-    // Silently fail - we'll use RSS content as fallback
     return null;
   }
-}
-
-// Batch extract articles with concurrency limit
-async function extractArticlesBatch(items, concurrency = 5) {
-  const results = new Map();
-
-  for (let i = 0; i < items.length; i += concurrency) {
-    const batch = items.slice(i, i + concurrency);
-    const batchResults = await Promise.allSettled(
-      batch.map(async (item) => {
-        if (!item.link) return { id: item.id, content: null };
-        const extracted = await extractArticleContent(item.link);
-        return { id: item.id, content: extracted };
-      })
-    );
-
-    for (const result of batchResults) {
-      if (result.status === 'fulfilled' && result.value) {
-        results.set(result.value.id, result.value.content);
-      }
-    }
-  }
-
-  return results;
 }
 
 function parseDate(dateStr) {
@@ -255,7 +241,6 @@ function parseRSS(xml, feedTitle) {
 async function main() {
   console.log('Fetching all feeds in parallel...\n');
 
-  // Flatten all feeds with category info
   const allFeeds = [];
   for (const category of config.categories) {
     for (const feed of category.feeds) {
@@ -266,63 +251,86 @@ async function main() {
   console.log(`Total feeds: ${allFeeds.length}`);
   console.log(`Full text extraction: ${config.fetchFullText ? 'enabled' : 'disabled'}\n`);
 
-  // Fetch ALL feeds in parallel batches (10 concurrent)
-  const results = [];
-  const batchSize = 10;
+  // Fetch ALL RSS feeds in parallel
+  console.log('Fetching RSS feeds...');
+  const feedPromises = allFeeds.map(async (feed) => {
+    try {
+      const xml = await fetchWithRetry(feed.url);
+      const items = parseRSS(xml, feed.title);
+      console.log(`  ✓ ${feed.title}: ${items.length} items`);
+      return { feed, items, error: null };
+    } catch (err) {
+      console.log(`  ✗ ${feed.title}: ${err.message}`);
+      return { feed, items: [], error: err.message };
+    }
+  });
 
-  for (let i = 0; i < allFeeds.length; i += batchSize) {
-    const batch = allFeeds.slice(i, i + batchSize);
-    console.log(`\nBatch ${Math.floor(i/batchSize) + 1}/${Math.ceil(allFeeds.length/batchSize)}`);
-
-    const batchResults = await Promise.allSettled(
-      batch.map(async (feed) => {
-        console.log(`  Fetching: ${feed.title}`);
-        const xml = await fetchWithRetry(feed.url);
-        const items = parseRSS(xml, feed.title);
-        console.log(`    ✓ ${items.length} items`);
-        return { feed, items };
-      })
-    );
-    results.push(...batchResults);
-  }
+  const feedResults = await Promise.all(feedPromises);
 
   // If fetchFullText is enabled, extract full article content
   if (config.fetchFullText) {
-    console.log('\n\nExtracting full article content...');
+    console.log('\n\nExtracting full article content (parallel)...');
 
-    // Collect all items that need article extraction
+    // Collect all items with their references
     const allItems = [];
-    for (const result of results) {
-      if (result.status === 'fulfilled') {
-        allItems.push(...result.value.items);
+    for (const result of feedResults) {
+      for (const item of result.items) {
+        allItems.push(item);
       }
     }
 
     console.log(`Total articles to extract: ${allItems.length}`);
 
-    // Extract articles in batches of 5 concurrent requests
+    // Extract ALL articles in parallel (with concurrency limit via Promise pool)
+    const concurrency = 20; // Process 20 at a time
     let extracted = 0;
-    const articlesPerBatch = 10;
+    let failed = 0;
+    let completed = 0;
 
-    for (let i = 0; i < allItems.length; i += articlesPerBatch) {
-      const batch = allItems.slice(i, i + articlesPerBatch);
-      const extractedContent = await extractArticlesBatch(batch, 5);
+    // Create a pool of promises
+    const pool = [];
+    let index = 0;
 
-      // Update items with extracted content
-      for (const item of batch) {
-        const articleContent = extractedContent.get(item.id);
-        if (articleContent) {
-          // Store full article content, keep original RSS content as fallback
-          item.fullContent = articleContent.content;
-          extracted++;
+    const processNext = async () => {
+      while (index < allItems.length) {
+        const currentIndex = index++;
+        const item = allItems[currentIndex];
+
+        if (!item.link) {
+          completed++;
+          continue;
+        }
+
+        try {
+          const fullContent = await extractArticleContent(item.link);
+          if (fullContent) {
+            item.fullContent = fullContent;
+            extracted++;
+          } else {
+            failed++;
+          }
+        } catch {
+          failed++;
+        }
+
+        completed++;
+        if (completed % 20 === 0 || completed === allItems.length) {
+          process.stdout.write(`\r  Progress: ${completed}/${allItems.length} (${extracted} extracted, ${failed} failed)`);
         }
       }
+    };
 
-      const progress = Math.min(i + articlesPerBatch, allItems.length);
-      process.stdout.write(`\r  Progress: ${progress}/${allItems.length} (${extracted} extracted)`);
+    // Start concurrent workers
+    const workers = [];
+    for (let i = 0; i < Math.min(concurrency, allItems.length); i++) {
+      workers.push(processNext());
     }
+    await Promise.all(workers);
 
     console.log(`\n  ✓ Successfully extracted ${extracted}/${allItems.length} articles`);
+    if (failed > 0) {
+      console.log(`  ⚠ Failed to extract ${failed} articles (will use RSS content as fallback)`);
+    }
   }
 
   // Reassemble into categories
@@ -334,35 +342,24 @@ async function main() {
     }))
   };
 
-  // Map results back to categories
-  for (let i = 0; i < allFeeds.length; i++) {
-    const feed = allFeeds[i];
-    const result = results[i];
-    const categoryData = output.categories.find(c => c.name === feed.categoryName);
-
-    if (result.status === 'fulfilled') {
-      categoryData.feeds.push({
-        title: feed.title,
-        url: feed.url,
-        items: result.value.items,
-        error: null
-      });
-    } else {
-      console.error(`  ✗ ${feed.title}: ${result.reason?.message || 'Unknown error'}`);
-      categoryData.feeds.push({
-        title: feed.title,
-        url: feed.url,
-        items: [],
-        error: result.reason?.message || 'Fetch failed'
-      });
-    }
+  for (const result of feedResults) {
+    const categoryData = output.categories.find(c => c.name === result.feed.categoryName);
+    categoryData.feeds.push({
+      title: result.feed.title,
+      url: result.feed.url,
+      items: result.items,
+      error: result.error
+    });
   }
 
   fs.writeFileSync('data/feeds.json', JSON.stringify(output, null, 2));
 
   const totalItems = output.categories.reduce((sum, cat) =>
     sum + cat.feeds.reduce((s, f) => s + f.items.length, 0), 0);
-  console.log(`\nDone! ${totalItems} articles saved to data/feeds.json`);
+  const totalWithFullContent = output.categories.reduce((sum, cat) =>
+    sum + cat.feeds.reduce((s, f) => s + f.items.filter(i => i.fullContent).length, 0), 0);
+
+  console.log(`\nDone! ${totalItems} articles saved (${totalWithFullContent} with full content)`);
 }
 
 main();
