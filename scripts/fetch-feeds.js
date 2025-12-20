@@ -221,15 +221,37 @@ function cleanHtmlContent(html, title = '') {
   }
 }
 
-// Extract real article URL from Google News content
-function extractGoogleNewsArticleUrl(content) {
-  if (!content) return null;
-  const matches = content.match(/href="(https?:\/\/(?!news\.google\.com)[^"]+)"/g);
-  if (matches && matches.length > 0) {
-    const urlMatch = matches[0].match(/href="([^"]+)"/);
-    return urlMatch ? urlMatch[1] : null;
-  }
-  return null;
+// Follow redirect to get real URL (for Google News)
+async function followRedirect(url, maxRedirects = 3) {
+  return new Promise((resolve) => {
+    if (maxRedirects <= 0) return resolve(url);
+
+    const client = url.startsWith('https') ? https : http;
+    const req = client.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+        'Accept': 'text/html',
+      },
+      timeout: 10000
+    }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        const redirectUrl = res.headers.location.startsWith('http')
+          ? res.headers.location
+          : new URL(res.headers.location, url).href;
+        // If redirect is still Google News, follow again
+        if (redirectUrl.includes('news.google.com')) {
+          followRedirect(redirectUrl, maxRedirects - 1).then(resolve);
+        } else {
+          resolve(redirectUrl);
+        }
+      } else {
+        resolve(url);
+      }
+      res.destroy();
+    });
+    req.on('error', () => resolve(url));
+    req.on('timeout', () => { req.destroy(); resolve(url); });
+  });
 }
 
 // Check if content is a cookie/consent wall
@@ -363,7 +385,7 @@ function extractTitle(item) {
   return decodeHtmlEntities(title);
 }
 
-function parseRSS(xml, feedTitle) {
+function parseRSS(xml, feedTitle, maxArticles = config.articlesPerFeed) {
   const parsed = parser.parse(xml);
   const items = [];
   const isGoogleNews = feedTitle.toLowerCase().includes('google news');
@@ -374,15 +396,11 @@ function parseRSS(xml, feedTitle) {
     const feedItems = Array.isArray(parsed.rss.channel.item)
       ? parsed.rss.channel.item : [parsed.rss.channel.item];
 
-    for (const item of feedItems.slice(0, config.articlesPerFeed)) {
+    for (const item of feedItems.slice(0, maxArticles)) {
       const content = extractContent(item);
       let link = item.link;
 
-      // For Google News, extract real article URL
-      if (isGoogleNews) {
-        const realUrl = extractGoogleNewsArticleUrl(content);
-        if (realUrl) link = realUrl;
-      }
+      // For Google News, keep the link to resolve via redirect later
 
       // For Hacker News, the link might be to HN comments
       // Store both the HN link and extract the actual article URL if present
@@ -399,7 +417,8 @@ function parseRSS(xml, feedTitle) {
         content,
         date: parseDate(item.pubDate),
         feedTitle,
-        isHackerNews
+        isHackerNews,
+        isGoogleNews
       });
     }
   }
@@ -409,7 +428,7 @@ function parseRSS(xml, feedTitle) {
     const feedItems = Array.isArray(parsed.feed.entry)
       ? parsed.feed.entry : [parsed.feed.entry];
 
-    for (const item of feedItems.slice(0, config.articlesPerFeed)) {
+    for (const item of feedItems.slice(0, maxArticles)) {
       const link = Array.isArray(item.link)
         ? item.link.find(l => l['@_rel'] === 'alternate')?.['@_href'] || item.link[0]?.['@_href']
         : item.link?.['@_href'] || item.link;
@@ -430,7 +449,7 @@ function parseRSS(xml, feedTitle) {
     const feedItems = Array.isArray(parsed['rdf:RDF'].item)
       ? parsed['rdf:RDF'].item : [parsed['rdf:RDF'].item];
 
-    for (const item of feedItems.slice(0, config.articlesPerFeed)) {
+    for (const item of feedItems.slice(0, maxArticles)) {
       items.push({
         id: item.link || Math.random().toString(36),
         title: extractTitle(item),
@@ -463,7 +482,8 @@ async function main() {
   const feedPromises = allFeeds.map(async (feed) => {
     try {
       const xml = await fetchWithRetry(feed.url);
-      const items = parseRSS(xml, feed.title);
+      const maxArticles = feed.articlesPerFeed || config.articlesPerFeed;
+      const items = parseRSS(xml, feed.title, maxArticles);
       console.log(`  ✓ ${feed.title}: ${items.length} items`);
       return { feed, items, error: null };
     } catch (err) {
@@ -490,7 +510,17 @@ async function main() {
         if (!item.link) { completed++; continue; }
 
         try {
-          const fullContent = await extractArticleContent(item.link, item.title);
+          // For Google News, follow redirect to get real URL
+          let articleUrl = item.link;
+          if (item.isGoogleNews && item.link.includes('news.google.com')) {
+            const realUrl = await followRedirect(item.link);
+            if (realUrl && !realUrl.includes('news.google.com')) {
+              articleUrl = realUrl;
+              item.link = realUrl; // Update the item link to the real URL
+            }
+          }
+
+          const fullContent = await extractArticleContent(articleUrl, item.title);
           if (fullContent) {
             item.fullContent = fullContent;
             extracted++;
