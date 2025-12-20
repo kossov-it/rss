@@ -203,16 +203,54 @@
 
     .article-content {
       display: none;
-      padding: 20px;
       background: #161b22;
       border-top: 1px solid #21262d;
       font-size: 0.95rem;
       line-height: 1.7;
-      overflow-x: auto;
       word-wrap: break-word;
+      position: relative;
     }
 
     .article-content.open { display: block; }
+
+    .article-content-inner {
+      padding: 20px;
+      max-height: 400px;
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+
+    .article-progress {
+      position: sticky;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 3px;
+      background: #30363d;
+      z-index: 10;
+    }
+
+    .article-progress-bar {
+      height: 100%;
+      background: #238636;
+      width: 0%;
+      transition: width 0.1s ease-out;
+    }
+
+    .hn-preview {
+      padding: 12px 16px;
+      background: #0d1117;
+      border-radius: 6px;
+      border-left: 3px solid #f85149;
+      margin-bottom: 15px;
+      font-size: 0.9rem;
+      color: #8b949e;
+    }
+
+    .hn-full {
+      border-left: 3px solid #238636;
+      padding-left: 16px;
+    }
 
     .article-content img {
       max-width: 100%;
@@ -533,8 +571,28 @@
 
           for (const item of feed.items) {
             const readClass = isRead(item.id) ? 'read' : '';
-            // Use fullContent (extracted article) if available, fallback to RSS content
-            const displayContent = item.fullContent || item.content;
+            // For Hacker News: show preview (RSS content) + full article
+            // For others: use fullContent if available, fallback to RSS content
+            let displayContent;
+            if (item.isHackerNews && item.fullContent) {
+              displayContent = `
+                <div class="hn-preview">${sanitizeContent(item.content) || ''}</div>
+                <hr style="border-color: #30363d; margin: 15px 0;">
+                <div class="hn-full">${sanitizeContent(item.fullContent)}</div>
+              `;
+            } else {
+              displayContent = sanitizeContent(item.fullContent || item.content) || '<p><em>No content available</em></p>';
+            }
+
+            // Build links section
+            let linksHtml = '';
+            if (item.link) {
+              linksHtml += `<a href="${escapeHtml(item.link)}" target="_blank" rel="noopener noreferrer" class="article-link">Open original ↗</a>`;
+            }
+            if (item.hnCommentsUrl) {
+              linksHtml += ` <a href="${escapeHtml(item.hnCommentsUrl)}" target="_blank" rel="noopener noreferrer" class="article-link">HN Comments ↗</a>`;
+            }
+
             html += `
               <div class="article ${readClass}" data-id="${escapeHtml(item.id)}">
                 <div class="article-header">
@@ -542,8 +600,11 @@
                   <span class="article-meta">${formatDate(item.date)}</span>
                 </div>
                 <div class="article-content">
-                  ${sanitizeContent(displayContent) || '<p><em>No content available</em></p>'}
-                  ${item.link ? `<a href="${escapeHtml(item.link)}" target="_blank" rel="noopener noreferrer" class="article-link">Open original ↗</a>` : ''}
+                  <div class="article-progress"><div class="article-progress-bar"></div></div>
+                  <div class="article-content-inner">
+                    ${displayContent}
+                    ${linksHtml}
+                  </div>
                 </div>
               </div>
             `;
@@ -589,17 +650,37 @@
           e.stopPropagation();
           const article = header.parentElement;
           const contentEl = article.querySelector('.article-content');
+          const innerEl = article.querySelector('.article-content-inner');
+          const progressBar = article.querySelector('.article-progress-bar');
           const id = article.dataset.id;
           const feedGroup = article.closest('.feed-group');
           const feedTitle = feedGroup.dataset.feed;
 
           const isOpen = contentEl.classList.contains('open');
 
-          // Close all others
-          content.querySelectorAll('.article-content.open').forEach(el => el.classList.remove('open'));
+          // Close all others and reset their progress
+          content.querySelectorAll('.article-content.open').forEach(el => {
+            el.classList.remove('open');
+            const bar = el.querySelector('.article-progress-bar');
+            if (bar) bar.style.width = '0%';
+          });
 
           if (!isOpen) {
             contentEl.classList.add('open');
+
+            // Setup scroll progress tracking
+            if (innerEl && progressBar) {
+              innerEl.scrollTop = 0;
+              progressBar.style.width = '0%';
+
+              innerEl.addEventListener('scroll', function() {
+                const scrollTop = this.scrollTop;
+                const scrollHeight = this.scrollHeight - this.clientHeight;
+                const progress = scrollHeight > 0 ? (scrollTop / scrollHeight) * 100 : 100;
+                progressBar.style.width = Math.min(100, progress) + '%';
+              });
+            }
+
             if (!article.classList.contains('read')) {
               article.classList.add('read');
               setRead(id);
@@ -622,9 +703,11 @@
     function sanitizeContent(html) {
       if (!html) return '';
       let clean = DOMPurify.sanitize(html, {
-        ALLOWED_TAGS: ['p', 'br', 'b', 'i', 'em', 'strong', 'a', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 'img', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'figure', 'figcaption', 'div', 'span', 'table', 'tr', 'td', 'th', 'tbody', 'thead'],
-        ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class'],
-        ALLOW_DATA_ATTR: false
+        ALLOWED_TAGS: ['p', 'br', 'b', 'i', 'em', 'strong', 'a', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 'img', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'figure', 'figcaption', 'div', 'span', 'table', 'tr', 'td', 'th', 'tbody', 'thead', 'video', 'iframe', 'source'],
+        ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'style', 'controls', 'allowfullscreen', 'frameborder', 'type'],
+        ALLOW_DATA_ATTR: false,
+        ADD_TAGS: ['iframe'],
+        ADD_ATTR: ['allow', 'allowfullscreen']
       });
       clean = clean.replace(/<img /g, '<img loading="lazy" ');
       clean = clean.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ');
