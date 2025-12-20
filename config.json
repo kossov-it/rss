@@ -22,16 +22,11 @@
         { "title": "Heise Mac & i", "url": "https://www.heise.de/mac-and-i/feed.xml" },
         { "title": "TechStage", "url": "https://www.techstage.de/rss.xml" },
         { "title": "Telepolis", "url": "https://www.telepolis.de/news-atom.xml" },
-        { "title": "Heise", "url": "https://www.heise.de/rss/heise-atom.xml" },
-        { "title": "Heise IT", "url": "https://www.heise.de/rss/heise-Rubrik-IT-atom.xml" },
+        { "title": "Heise", "url": "https://www.heise.de/rss/heise-atom.xml", "articlesPerFeed": 40 },
         { "title": "Heise Wissen", "url": "https://www.heise.de/rss/heise-Rubrik-Wissen-atom.xml" },
         { "title": "Heise Mobiles", "url": "https://www.heise.de/rss/heise-Rubrik-Mobiles-atom.xml" },
-        { "title": "Heise Entertainment", "url": "https://www.heise.de/rss/heise-Rubrik-Entertainment-atom.xml" },
-        { "title": "Heise Netzpolitik", "url": "https://www.heise.de/rss/heise-Rubrik-Netzpolitik-atom.xml" },
-        { "title": "Heise Wirtschaft", "url": "https://www.heise.de/rss/heise-Rubrik-Wirtschaft-atom.xml" },
         { "title": "Heise Journal", "url": "https://www.heise.de/rss/heise-Rubrik-Journal-atom.xml" },
-        { "title": "Heise Top", "url": "https://www.heise.de/rss/heise-top-atom.xml" },
-        { "title": "Heise Tipps & Tricks", "url": "https://www.heise.de/tipps-tricks/feed.xml" }
+        { "title": "Heise Top", "url": "https://www.heise.de/rss/heise-top-atom.xml" }
       ]
     }
   ]
