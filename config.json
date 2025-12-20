@@ -31,7 +31,6 @@
         { "title": "Heise Wirtschaft", "url": "https://www.heise.de/rss/heise-Rubrik-Wirtschaft-atom.xml" },
         { "title": "Heise Journal", "url": "https://www.heise.de/rss/heise-Rubrik-Journal-atom.xml" },
         { "title": "Heise Top", "url": "https://www.heise.de/rss/heise-top-atom.xml" },
-        { "title": "Heise iMonitor", "url": "https://www.heise.de/netze/netzwerk-tools/imonitor-internet-stoerungen/feed/aktuelle-meldungen/" },
         { "title": "Heise Tipps & Tricks", "url": "https://www.heise.de/tipps-tricks/feed.xml" }
       ]
     }

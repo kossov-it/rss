@@ -637,8 +637,10 @@
         if (!res.ok) throw new Error('Failed to load feeds');
         data = await res.json();
 
-        document.getElementById('updated').textContent =
-          'Updated: ' + new Date(data.lastUpdated).toLocaleString();
+        const d = new Date(data.lastUpdated);
+        const pad = n => n.toString().padStart(2, '0');
+        const formatted = `${pad(d.getDate())}.${pad(d.getMonth()+1)}.${d.getFullYear()}, ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        document.getElementById('updated').textContent = 'Updated: ' + formatted;
 
         renderTabs();
         renderContent();
