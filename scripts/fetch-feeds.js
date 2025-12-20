@@ -14,13 +14,13 @@ function decodeHtmlEntities(str) {
   const entities = {
     '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"',
     '&#39;': "'", '&apos;': "'", '&nbsp;': ' ',
-    '&ndash;': '–', '&mdash;': '—',
-    '&lsquo;': ''', '&rsquo;': ''', '&ldquo;': '"', '&rdquo;': '"',
-    '&bull;': '•', '&hellip;': '…',
-    '&copy;': '©', '&reg;': '®', '&trade;': '™',
-    '&euro;': '€', '&pound;': '£', '&yen;': '¥',
-    '&auml;': 'ä', '&ouml;': 'ö', '&uuml;': 'ü',
-    '&Auml;': 'Ä', '&Ouml;': 'Ö', '&Uuml;': 'Ü', '&szlig;': 'ß',
+    '&ndash;': '\u2013', '&mdash;': '\u2014',
+    '&lsquo;': '\u2018', '&rsquo;': '\u2019', '&ldquo;': '\u201C', '&rdquo;': '\u201D',
+    '&bull;': '\u2022', '&hellip;': '\u2026',
+    '&copy;': '\u00A9', '&reg;': '\u00AE', '&trade;': '\u2122',
+    '&euro;': '\u20AC', '&pound;': '\u00A3', '&yen;': '\u00A5',
+    '&auml;': '\u00E4', '&ouml;': '\u00F6', '&uuml;': '\u00FC',
+    '&Auml;': '\u00C4', '&Ouml;': '\u00D6', '&Uuml;': '\u00DC', '&szlig;': '\u00DF',
   };
   let result = str;
   for (const [entity, char] of Object.entries(entities)) {
