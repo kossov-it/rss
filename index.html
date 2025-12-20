@@ -90,6 +90,13 @@
       margin-bottom: 8px;
       cursor: pointer;
       transition: background 0.15s;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .feed-group.collapsed .feed-header {
+      position: static;
     }
 
     .feed-header:hover { background: #1c2128; }
@@ -633,6 +640,13 @@
           }
 
           feedGroup.classList.toggle('collapsed');
+
+          // When expanding, scroll the feed header to the top
+          if (!isCollapsing) {
+            setTimeout(() => {
+              header.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }, 50);
+          }
         });
       });
 
