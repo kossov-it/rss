@@ -347,6 +347,11 @@ async function extractArticleContent(url, title = '', retries = 1) {
 
     if (!article) return null;
 
+    // Check if extracted content is a cookie wall (Golem.de issue)
+    if (isCookieWall(article.textContent)) {
+      return null;
+    }
+
     // Try to get HTML content with images/videos, fallback to text
     const htmlContent = cleanHtmlContent(article.content, title);
     if (htmlContent) return htmlContent;
