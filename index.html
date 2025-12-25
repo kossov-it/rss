@@ -431,30 +431,6 @@
       padding: 10px 15px;
       font-style: italic;
     }
-
-    /* Skeleton loading animation */
-    .skeleton {
-      background: linear-gradient(90deg, #21262d 25%, #30363d 50%, #21262d 75%);
-      background-size: 200% 100%;
-      animation: shimmer 1.5s infinite;
-      border-radius: 4px;
-    }
-
-    @keyframes shimmer {
-      0% { background-position: 200% 0; }
-      100% { background-position: -200% 0; }
-    }
-
-    .skeleton-title {
-      height: 18px;
-      width: 70%;
-      margin-bottom: 8px;
-    }
-
-    .skeleton-meta {
-      height: 12px;
-      width: 60px;
-    }
   </style>
 </head>
 <body>
@@ -479,8 +455,9 @@
     const STORAGE_KEY = 'rss-reader-read';
     let indexData = null;
     let activeCategory = 'all';
+    let isLegacyMode = false;
 
-    // Cache for loaded feed content
+    // Cache for loaded feed content (key = feedFile or feedTitle for legacy)
     const feedContentCache = new Map();
 
     function getRead() {
@@ -602,24 +579,21 @@
 
     function sanitizeContent(html) {
       if (!html) return '';
-      // DOMPurify is loaded with defer, check if available
       if (typeof DOMPurify === 'undefined') {
-        // Fallback: basic sanitization
         return html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
       }
       let clean = DOMPurify.sanitize(html, {
-        ALLOWED_TAGS: ['p', 'br', 'b', 'i', 'em', 'strong', 'a', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 'img', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'figure', 'figcaption', 'div', 'span', 'table', 'tr', 'td', 'th', 'tbody', 'thead', 'video', 'iframe', 'source'],
-        ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'style', 'controls', 'allowfullscreen', 'frameborder', 'type'],
+        ALLOWED_TAGS: ['p', 'br', 'b', 'i', 'em', 'strong', 'a', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 'img', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'figure', 'figcaption', 'div', 'span', 'table', 'tr', 'td', 'th', 'tbody', 'thead', 'video', 'iframe', 'source', 'hr', 'font'],
+        ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'style', 'controls', 'allowfullscreen', 'frameborder', 'type', 'color', 'target', 'rel'],
         ALLOW_DATA_ATTR: false,
         ADD_TAGS: ['iframe'],
         ADD_ATTR: ['allow', 'allowfullscreen']
       });
       clean = clean.replace(/<img /g, '<img loading="lazy" ');
-      clean = clean.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ');
+      clean = clean.replace(/<a(?![^>]*target=)/g, '<a target="_blank" rel="noopener noreferrer"');
       return clean;
     }
 
-    // Render the initial UI with article titles only (no content)
     function renderContent() {
       const content = document.getElementById('content');
       let html = '';
@@ -628,8 +602,10 @@
         for (const feed of category.feeds) {
           const unreadCount = feed.items.filter(item => !isRead(item.id)).length;
           const allReadClass = unreadCount === 0 ? 'all-read' : '';
+          // Use feed title as key for legacy mode, file for new mode
+          const feedKey = feed.file || feed.title;
 
-          html += `<div class="feed-group collapsed" data-category="${category.name}" data-feed="${escapeHtml(feed.title)}" data-file="${escapeHtml(feed.file)}">`;
+          html += `<div class="feed-group collapsed" data-category="${category.name}" data-feed="${escapeHtml(feed.title)}" data-feedkey="${escapeHtml(feedKey)}">`;
           html += `<div class="feed-header">
             <div class="feed-header-left">
               <span class="feed-toggle">▼</span>
@@ -648,7 +624,6 @@
             html += `<p class="no-items">No items</p>`;
           }
 
-          // Render article headers only - content will be loaded on demand
           for (const item of feed.items) {
             const readClass = isRead(item.id) ? 'read' : '';
             html += `
@@ -676,26 +651,32 @@
     }
 
     // Load full feed content when needed
-    async function loadFeedContent(feedFile) {
-      if (feedContentCache.has(feedFile)) {
-        return feedContentCache.get(feedFile);
+    async function loadFeedContent(feedKey) {
+      if (feedContentCache.has(feedKey)) {
+        return feedContentCache.get(feedKey);
       }
 
+      // In legacy mode, content was already cached during init
+      if (isLegacyMode) {
+        return null;
+      }
+
+      // New mode: fetch from individual feed file
       try {
-        const res = await fetch(`data/feeds/${feedFile}`);
+        const res = await fetch(`data/feeds/${feedKey}`);
         if (!res.ok) throw new Error('Failed to load feed');
         const data = await res.json();
-        feedContentCache.set(feedFile, data);
+        feedContentCache.set(feedKey, data);
         return data;
       } catch (err) {
-        console.error('Failed to load feed:', feedFile, err);
+        console.error('Failed to load feed:', feedKey, err);
         return null;
       }
     }
 
     // Get full article content for display
-    async function getArticleContent(feedFile, articleId) {
-      const feedData = await loadFeedContent(feedFile);
+    async function getArticleContent(feedKey, articleId) {
+      const feedData = await loadFeedContent(feedKey);
       if (!feedData) return null;
 
       const article = feedData.items.find(item => item.id === articleId);
@@ -705,7 +686,7 @@
     function attachEventHandlers() {
       const content = document.getElementById('content');
 
-      // Feed header click handlers (collapse/expand)
+      // Feed header click handlers
       content.querySelectorAll('.feed-header').forEach(header => {
         header.addEventListener('click', (e) => {
           if (e.target.classList.contains('feed-mark-read')) return;
@@ -748,11 +729,11 @@
           const id = article.dataset.id;
           const feedGroup = article.closest('.feed-group');
           const feedTitle = feedGroup.dataset.feed;
-          const feedFile = feedGroup.dataset.file;
+          const feedKey = feedGroup.dataset.feedkey;
 
           const isOpen = contentEl.classList.contains('open');
 
-          // Close all others and reset their progress
+          // Close all others
           content.querySelectorAll('.article-content.open').forEach(el => {
             el.classList.remove('open');
             const bar = el.querySelector('.article-progress-bar');
@@ -762,10 +743,9 @@
           if (!isOpen) {
             contentEl.classList.add('open');
 
-            // Check if content is already loaded
+            // Load content if not already loaded
             if (innerEl.querySelector('.content-loading')) {
-              // Load content lazily
-              const articleData = await getArticleContent(feedFile, id);
+              const articleData = await getArticleContent(feedKey, id);
 
               if (articleData) {
                 let displayContent;
@@ -793,7 +773,7 @@
               }
             }
 
-            // Setup scroll progress tracking
+            // Setup scroll progress
             if (innerEl && progressBar) {
               innerEl.scrollTop = 0;
               progressBar.style.width = '0%';
@@ -821,46 +801,47 @@
         // Try to load the new lightweight index first
         let res = await fetch('data/feeds-index.json');
 
-        if (!res.ok) {
+        if (res.ok) {
+          // New mode - feeds-index.json exists
+          indexData = await res.json();
+          isLegacyMode = false;
+        } else {
           // Fall back to legacy feeds.json
           res = await fetch('data/feeds.json');
           if (!res.ok) throw new Error('Failed to load feeds');
 
           const legacyData = await res.json();
-          // Convert legacy format to new index format
+          isLegacyMode = true;
+
+          // Convert to index format and cache content
           indexData = {
             lastUpdated: legacyData.lastUpdated,
-            categories: legacyData.categories.map(cat => ({
-              name: cat.name,
-              feeds: cat.feeds.map(feed => ({
+            categories: []
+          };
+
+          for (const cat of legacyData.categories) {
+            const categoryData = { name: cat.name, feeds: [] };
+
+            for (const feed of cat.feeds) {
+              // Cache the full feed content using feed title as key
+              feedContentCache.set(feed.title, { items: feed.items });
+
+              // Add lightweight version to index
+              categoryData.feeds.push({
                 title: feed.title,
                 url: feed.url,
-                file: null, // Will use embedded items
+                file: null, // Legacy mode marker
                 error: feed.error,
                 items: feed.items.map(item => ({
                   id: item.id,
                   title: item.title,
-                  date: item.date,
-                  link: item.link,
-                  hnCommentsUrl: item.hnCommentsUrl,
-                  isHackerNews: item.isHackerNews,
-                  isGoogleNews: item.isGoogleNews,
-                  // For legacy mode, include content directly
-                  _content: item.content,
-                  _fullContent: item.fullContent
+                  date: item.date
                 }))
-              }))
-            }))
-          };
-
-          // Cache legacy content
-          for (const cat of legacyData.categories) {
-            for (const feed of cat.feeds) {
-              feedContentCache.set(null, { items: feed.items });
+              });
             }
+
+            indexData.categories.push(categoryData);
           }
-        } else {
-          indexData = await res.json();
         }
 
         const d = new Date(indexData.lastUpdated);
@@ -871,7 +852,6 @@
         renderTabs();
         renderContent();
 
-        // Tab click handler
         document.getElementById('tabs').addEventListener('click', e => {
           if (e.target.classList.contains('tab')) {
             switchCategory(e.target.dataset.category);
@@ -881,6 +861,7 @@
         document.getElementById('markAll').addEventListener('click', markAllRead);
         document.getElementById('reload').addEventListener('click', () => location.reload());
       } catch (err) {
+        console.error('Failed to init:', err);
         document.getElementById('content').innerHTML = `
           <div class="loading">
             Failed to load feeds. Run the GitHub Action first to generate data/feeds.json
