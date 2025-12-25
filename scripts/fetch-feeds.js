@@ -1,4 +1,5 @@
 const fs = require('fs');
+const path = require('path');
 const https = require('https');
 const http = require('http');
 const { XMLParser } = require('fast-xml-parser');
@@ -7,6 +8,12 @@ const { JSDOM } = require('jsdom');
 
 const config = JSON.parse(fs.readFileSync('config.json', 'utf8'));
 const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
+
+// Ensure data/feeds directory exists
+const feedsDir = 'data/feeds';
+if (!fs.existsSync(feedsDir)) {
+  fs.mkdirSync(feedsDir, { recursive: true });
+}
 
 // HTML entity decoder
 function decodeHtmlEntities(str) {
@@ -35,20 +42,18 @@ function decodeHtmlEntities(str) {
 function cleanTextContent(text, title = '') {
   if (!text) return null;
 
-  // Normalize title for comparison
   const normalizedTitle = title.toLowerCase().trim();
   const titleWords = normalizedTitle.split(/\s+/).filter(w => w.length > 3);
 
   let lines = text.split('\n').map(l => l.trim()).filter(l => l);
 
-  // Patterns that indicate junk lines
   const junkPatterns = [
-    /^https?:\/\//i,                              // URLs
-    /[\w.-]+@[\w.-]+\.\w{2,}/,                    // Email addresses
-    /^\+?\d[\d\s\-\(\)]{6,}$/,                    // Phone numbers
-    /^\d{4}-\d{2}-\d{2}/,                         // ISO dates
-    /^\d{2}\.\d{2}\.\d{4}/,                       // European dates
-    /^\d{2}:\d{2}.*?(GMT|UTC|MSK|\+\d{2})/i,      // Times with timezone
+    /^https?:\/\//i,
+    /[\w.-]+@[\w.-]+\.\w{2,}/,
+    /^\+?\d[\d\s\-\(\)]{6,}$/,
+    /^\d{4}-\d{2}-\d{2}/,
+    /^\d{2}\.\d{2}\.\d{4}/,
+    /^\d{2}:\d{2}.*?(GMT|UTC|MSK|\+\d{2})/i,
     /^(Updated|Published|Опубликовано|Обновлено):/i,
     /Sputnik International/i,
     /Rossiya Segodnya/i,
@@ -57,54 +62,47 @@ function cleanTextContent(text, title = '') {
     /feedback@|internet-group@/i,
     /MIA\s*[„"«»]/i,
     /ФГУП\s/i,
-    /^[a-z]{2}[-_][A-Z]{2}$/,                     // Locale codes
+    /^[a-z]{2}[-_][A-Z]{2}$/,
     /^(News|Новости|World|В мире)$/i,
-    /^\d{4}$/,                                     // Just a year
+    /^\d{4}$/,
     /^(world|russia|ukraine|usa|europe|россия|украина|мир)$/i,
-    /xn--.*?\.xn--/i,                             // Punycode domains
-    /\.jpg|\.png|\.gif|\.webp/i,                  // Image file extensions
-    /awards?\/?$/i,                               // Awards pages
-    /^Copyright\s|©\s?\d{4}/i,                    // Copyright
+    /xn--.*?\.xn--/i,
+    /\.jpg|\.png|\.gif|\.webp/i,
+    /awards?\/?$/i,
+    /^Copyright\s|©\s?\d{4}/i,
     /All rights reserved/i,
     /Все права защищены/i,
-    /Cookie|Datenschutz|Privacy/i,                // Cookie/privacy notices
-    /Cookies zustimmen/i,                         // German cookie consent
-    /Golem pur/i,                                 // Golem subscription
+    /Cookie|Datenschutz|Privacy/i,
+    /Cookies zustimmen/i,
+    /Golem pur/i,
     /^Zu Golem|^Hier anmelden/i,
   ];
 
-  // Filter lines aggressively
   lines = lines.filter(line => {
     if (line.length < 20) return false;
-    if (line.length > 500) return true; // Long lines are usually content
+    if (line.length > 500) return true;
 
-    // Check junk patterns
     for (const pattern of junkPatterns) {
       if (pattern.test(line)) return false;
     }
 
-    // Skip if line looks like repeated title
     const lineLower = line.toLowerCase();
     if (lineLower === normalizedTitle) return false;
 
-    // Skip if line is mostly the title words
     if (titleWords.length >= 3) {
       const matchingWords = titleWords.filter(w => lineLower.includes(w));
       if (matchingWords.length >= titleWords.length * 0.8 && line.length < 150) return false;
     }
 
-    // Skip lines that are just comma-separated tags
     const commaCount = (line.match(/,/g) || []).length;
     if (commaCount > 3 && line.length < 200 && !line.includes('.')) return false;
 
-    // Skip lines with low letter ratio (metadata)
     const letters = (line.match(/[a-zA-Zа-яА-ЯёЁäöüÄÖÜß]/g) || []).length;
     if (letters / line.length < 0.5 && line.length < 100) return false;
 
     return true;
   });
 
-  // Remove consecutive duplicates and near-duplicates
   const seen = new Set();
   lines = lines.filter(line => {
     const key = line.substring(0, 60).toLowerCase();
@@ -113,14 +111,12 @@ function cleanTextContent(text, title = '') {
     return true;
   });
 
-  // Join and clean
   let cleaned = lines.join('\n\n').trim();
   cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
   cleaned = cleaned.replace(/[ \t]+/g, ' ');
 
   if (cleaned.length < 100) return null;
 
-  // Convert to paragraphs
   return cleaned.split('\n\n')
     .map(p => p.trim())
     .filter(p => p.length > 20)
@@ -139,7 +135,6 @@ function cleanHtmlContent(html, title = '') {
     const dom = new JSDOM(html, { virtualConsole });
     const doc = dom.window.document;
 
-    // Remove unwanted elements
     const removeSelectors = [
       'script', 'style', 'nav', 'footer', 'aside', 'header', 'noscript',
       '.advertisement', '.ad', '.ads', '.social-share', '.comments',
@@ -153,11 +148,9 @@ function cleanHtmlContent(html, title = '') {
       try { doc.querySelectorAll(sel).forEach(el => el.remove()); } catch {}
     });
 
-    // Get main content area
     const article = doc.querySelector('article') || doc.querySelector('main') || doc.body;
     if (!article) return null;
 
-    // Process images - keep with fixed dimensions
     let hasMedia = false;
     article.querySelectorAll('img').forEach(img => {
       const src = img.src || img.getAttribute('data-src') || img.getAttribute('data-lazy-src');
@@ -173,7 +166,6 @@ function cleanHtmlContent(html, title = '') {
       }
     });
 
-    // Process YouTube embeds
     article.querySelectorAll('iframe[src*="youtube"], iframe[src*="youtu.be"]').forEach(iframe => {
       const src = iframe.src || iframe.getAttribute('data-src');
       if (src) {
@@ -184,33 +176,27 @@ function cleanHtmlContent(html, title = '') {
       }
     });
 
-    // Process Vimeo embeds
     article.querySelectorAll('iframe[src*="vimeo"]').forEach(iframe => {
       iframe.setAttribute('style', 'width: 100%; max-width: 560px; height: 315px; border: none; border-radius: 6px; margin: 10px 0;');
       hasMedia = true;
     });
 
-    // Process native video elements
     article.querySelectorAll('video').forEach(video => {
       video.setAttribute('style', 'max-width: 100%; height: auto; border-radius: 6px; margin: 10px 0;');
       video.setAttribute('controls', 'true');
       hasMedia = true;
     });
 
-    // Get cleaned HTML
     let content = article.innerHTML;
 
-    // Remove empty elements repeatedly until stable
     let prevLen;
     do {
       prevLen = content.length;
       content = content.replace(/<(\w+)[^>]*>\s*<\/\1>/g, '');
     } while (content.length !== prevLen);
 
-    // Clean up whitespace
     content = content.replace(/\s+/g, ' ').trim();
 
-    // Only return HTML content if it has meaningful text or media
     const textLength = content.replace(/<[^>]+>/g, '').trim().length;
     if (textLength > 100 || hasMedia) {
       return content;
@@ -238,7 +224,6 @@ async function followRedirect(url, maxRedirects = 3) {
         const redirectUrl = res.headers.location.startsWith('http')
           ? res.headers.location
           : new URL(res.headers.location, url).href;
-        // If redirect is still Google News, follow again
         if (redirectUrl.includes('news.google.com')) {
           followRedirect(redirectUrl, maxRedirects - 1).then(resolve);
         } else {
@@ -254,7 +239,6 @@ async function followRedirect(url, maxRedirects = 3) {
   });
 }
 
-// Check if content is a cookie/consent wall
 function isCookieWall(text) {
   const cookiePatterns = [
     /cookies?\s*(zustimmen|akzeptieren|accept)/i,
@@ -321,12 +305,10 @@ async function fetchWithRetry(url, retries = 1) {
   }
 }
 
-// Extract article content - returns both text and HTML versions
 async function extractArticleContent(url, title = '', retries = 1) {
   try {
     const html = await fetchUrl(url);
 
-    // Check for cookie walls
     if (isCookieWall(html)) {
       return null;
     }
@@ -337,7 +319,6 @@ async function extractArticleContent(url, title = '', retries = 1) {
     const dom = new JSDOM(html, { url, virtualConsole });
     const document = dom.window.document;
 
-    // Remove junk before parsing
     ['script', 'style', 'nav', 'footer', 'aside', '.ad', '.advertisement', '.comments', '.social'].forEach(sel => {
       try { document.querySelectorAll(sel).forEach(el => el.remove()); } catch {}
     });
@@ -347,16 +328,13 @@ async function extractArticleContent(url, title = '', retries = 1) {
 
     if (!article) return null;
 
-    // Check if extracted content is a cookie wall (Golem.de issue)
     if (isCookieWall(article.textContent)) {
       return null;
     }
 
-    // Try to get HTML content with images/videos, fallback to text
     const htmlContent = cleanHtmlContent(article.content, title);
     if (htmlContent) return htmlContent;
 
-    // Fallback to clean text if HTML extraction failed
     return cleanTextContent(article.textContent, title);
 
   } catch (err) {
@@ -405,10 +383,6 @@ function parseRSS(xml, feedTitle, maxArticles = config.articlesPerFeed) {
       const content = extractContent(item);
       let link = item.link;
 
-      // For Google News, keep the link to resolve via redirect later
-
-      // For Hacker News, the link might be to HN comments
-      // Store both the HN link and extract the actual article URL if present
       let hnCommentsUrl = null;
       if (isHackerNews && item.comments) {
         hnCommentsUrl = item.comments;
@@ -469,6 +443,14 @@ function parseRSS(xml, feedTitle, maxArticles = config.articlesPerFeed) {
   return items;
 }
 
+// Generate a safe filename from feed title
+function slugify(str) {
+  return str.toLowerCase()
+    .replace(/[äöü]/g, c => ({ 'ä': 'ae', 'ö': 'oe', 'ü': 'ue' }[c]))
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
 async function main() {
   console.log('Fetching all feeds in parallel...\n');
 
@@ -515,13 +497,12 @@ async function main() {
         if (!item.link) { completed++; continue; }
 
         try {
-          // For Google News, follow redirect to get real URL
           let articleUrl = item.link;
           if (item.isGoogleNews && item.link.includes('news.google.com')) {
             const realUrl = await followRedirect(item.link);
             if (realUrl && !realUrl.includes('news.google.com')) {
               articleUrl = realUrl;
-              item.link = realUrl; // Update the item link to the real URL
+              item.link = realUrl;
             }
           }
 
@@ -549,30 +530,89 @@ async function main() {
     if (failed > 0) console.log(`  ⚠ ${failed} articles will use RSS summary`);
   }
 
-  // Build output
-  const output = {
+  // Build index (lightweight metadata only)
+  const index = {
     lastUpdated: new Date().toISOString(),
-    categories: config.categories.map(cat => ({ name: cat.name, feeds: [] }))
+    categories: []
   };
 
+  // Write individual feed files and build index
   for (const result of feedResults) {
-    const categoryData = output.categories.find(c => c.name === result.feed.categoryName);
+    const categoryName = result.feed.categoryName;
+    let categoryData = index.categories.find(c => c.name === categoryName);
+    if (!categoryData) {
+      categoryData = { name: categoryName, feeds: [] };
+      index.categories.push(categoryData);
+    }
+
+    // Generate feed slug for filename
+    const feedSlug = slugify(result.feed.title);
+    const feedFile = `${slugify(categoryName)}-${feedSlug}.json`;
+
+    // Add to index (metadata only - no items)
     categoryData.feeds.push({
       title: result.feed.title,
       url: result.feed.url,
-      items: result.items,
-      error: result.error
+      file: feedFile,
+      count: result.items.length,
+      unreadCount: result.items.length, // All unread by default
+      error: result.error,
+      // Include basic article metadata for initial render (titles only, no content)
+      items: result.items.map(item => ({
+        id: item.id,
+        title: item.title,
+        date: item.date,
+        link: item.link,
+        hnCommentsUrl: item.hnCommentsUrl,
+        isHackerNews: item.isHackerNews,
+        isGoogleNews: item.isGoogleNews
+      }))
     });
+
+    // Write full feed data to separate file (includes content)
+    const fullFeedData = {
+      title: result.feed.title,
+      items: result.items
+    };
+    fs.writeFileSync(
+      path.join(feedsDir, feedFile),
+      JSON.stringify(fullFeedData) // Minified JSON
+    );
   }
 
-  fs.writeFileSync('data/feeds.json', JSON.stringify(output, null, 2));
+  // Write the lightweight index file
+  fs.writeFileSync('data/feeds-index.json', JSON.stringify(index));
 
-  const totalItems = output.categories.reduce((sum, cat) =>
-    sum + cat.feeds.reduce((s, f) => s + f.items.length, 0), 0);
-  const totalWithFullContent = output.categories.reduce((sum, cat) =>
-    sum + cat.feeds.reduce((s, f) => s + f.items.filter(i => i.fullContent).length, 0), 0);
+  // Also write legacy feeds.json for backward compatibility (minified)
+  const legacyOutput = {
+    lastUpdated: index.lastUpdated,
+    categories: config.categories.map(cat => ({
+      name: cat.name,
+      feeds: feedResults
+        .filter(r => r.feed.categoryName === cat.name)
+        .map(r => ({
+          title: r.feed.title,
+          url: r.feed.url,
+          items: r.items,
+          error: r.error
+        }))
+    }))
+  };
+  fs.writeFileSync('data/feeds.json', JSON.stringify(legacyOutput)); // Minified!
+
+  const totalItems = feedResults.reduce((sum, r) => sum + r.items.length, 0);
+  const totalWithFullContent = feedResults.reduce((sum, r) =>
+    sum + r.items.filter(i => i.fullContent).length, 0);
+
+  // Calculate sizes
+  const indexSize = fs.statSync('data/feeds-index.json').size;
+  const legacySize = fs.statSync('data/feeds.json').size;
 
   console.log(`\nDone! ${totalItems} articles saved (${totalWithFullContent} with full content)`);
+  console.log(`\nFile sizes:`);
+  console.log(`  feeds-index.json: ${(indexSize / 1024).toFixed(1)} KB (loads instantly)`);
+  console.log(`  feeds.json: ${(legacySize / 1024).toFixed(1)} KB (minified, ${((1 - legacySize / 11000000) * 100).toFixed(0)}% smaller)`);
+  console.log(`  Individual feed files: ${allFeeds.length} files in data/feeds/`);
 }
 
 main();

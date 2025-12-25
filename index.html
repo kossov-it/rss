@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>RSS Reader</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js" defer></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -244,6 +244,29 @@
       transition: width 0.1s ease-out;
     }
 
+    .content-loading {
+      padding: 20px;
+      text-align: center;
+      color: #6e7681;
+    }
+
+    .content-loading::after {
+      content: '';
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid #30363d;
+      border-top-color: #58a6ff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-left: 8px;
+      vertical-align: middle;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
     .hn-preview {
       padding: 12px 16px;
       background: #0d1117;
@@ -408,6 +431,30 @@
       padding: 10px 15px;
       font-style: italic;
     }
+
+    /* Skeleton loading animation */
+    .skeleton {
+      background: linear-gradient(90deg, #21262d 25%, #30363d 50%, #21262d 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.5s infinite;
+      border-radius: 4px;
+    }
+
+    @keyframes shimmer {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+
+    .skeleton-title {
+      height: 18px;
+      width: 70%;
+      margin-bottom: 8px;
+    }
+
+    .skeleton-meta {
+      height: 12px;
+      width: 60px;
+    }
   </style>
 </head>
 <body>
@@ -430,8 +477,11 @@
 
   <script>
     const STORAGE_KEY = 'rss-reader-read';
-    let data = null;
+    let indexData = null;
     let activeCategory = 'all';
+
+    // Cache for loaded feed content
+    const feedContentCache = new Map();
 
     function getRead() {
       try {
@@ -481,10 +531,6 @@
       updateUnreadCount(feedTitle);
     }
 
-    function getUnreadCount(feedItems) {
-      return feedItems.filter(item => !isRead(item.id)).length;
-    }
-
     function updateUnreadCount(feedTitle) {
       const feedGroup = document.querySelector(`.feed-group[data-feed="${CSS.escape(feedTitle)}"]`);
       if (feedGroup) {
@@ -519,7 +565,7 @@
 
     function renderTabs() {
       const tabs = document.getElementById('tabs');
-      const categories = ['all', ...data.categories.map(c => c.name)];
+      const categories = ['all', ...indexData.categories.map(c => c.name)];
 
       tabs.innerHTML = categories.map(cat => `
         <button class="tab ${cat === activeCategory ? 'active' : ''}" data-category="${cat}">
@@ -531,12 +577,10 @@
     function switchCategory(category) {
       activeCategory = category;
 
-      // Update tab styling
       document.querySelectorAll('.tab').forEach(tab => {
         tab.classList.toggle('active', tab.dataset.category === category);
       });
 
-      // Show/hide feed groups based on category
       document.querySelectorAll('.feed-group').forEach(group => {
         const groupCategory = group.dataset.category;
         if (category === 'all' || groupCategory === category) {
@@ -547,17 +591,45 @@
       });
     }
 
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function sanitizeContent(html) {
+      if (!html) return '';
+      // DOMPurify is loaded with defer, check if available
+      if (typeof DOMPurify === 'undefined') {
+        // Fallback: basic sanitization
+        return html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+      }
+      let clean = DOMPurify.sanitize(html, {
+        ALLOWED_TAGS: ['p', 'br', 'b', 'i', 'em', 'strong', 'a', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 'img', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'figure', 'figcaption', 'div', 'span', 'table', 'tr', 'td', 'th', 'tbody', 'thead', 'video', 'iframe', 'source'],
+        ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'style', 'controls', 'allowfullscreen', 'frameborder', 'type'],
+        ALLOW_DATA_ATTR: false,
+        ADD_TAGS: ['iframe'],
+        ADD_ATTR: ['allow', 'allowfullscreen']
+      });
+      clean = clean.replace(/<img /g, '<img loading="lazy" ');
+      clean = clean.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ');
+      return clean;
+    }
+
+    // Render the initial UI with article titles only (no content)
     function renderContent() {
       const content = document.getElementById('content');
       let html = '';
 
-      for (const category of data.categories) {
+      for (const category of indexData.categories) {
         for (const feed of category.feeds) {
-          const unreadCount = getUnreadCount(feed.items);
+          const unreadCount = feed.items.filter(item => !isRead(item.id)).length;
           const allReadClass = unreadCount === 0 ? 'all-read' : '';
 
-          // All feeds collapsed by default
-          html += `<div class="feed-group collapsed" data-category="${category.name}" data-feed="${escapeHtml(feed.title)}">`;
+          html += `<div class="feed-group collapsed" data-category="${category.name}" data-feed="${escapeHtml(feed.title)}" data-file="${escapeHtml(feed.file)}">`;
           html += `<div class="feed-header">
             <div class="feed-header-left">
               <span class="feed-toggle">▼</span>
@@ -576,30 +648,9 @@
             html += `<p class="no-items">No items</p>`;
           }
 
+          // Render article headers only - content will be loaded on demand
           for (const item of feed.items) {
             const readClass = isRead(item.id) ? 'read' : '';
-            // For Hacker News: show preview (RSS content) + full article
-            // For others: use fullContent if available, fallback to RSS content
-            let displayContent;
-            if (item.isHackerNews && item.fullContent) {
-              displayContent = `
-                <div class="hn-preview">${sanitizeContent(item.content) || ''}</div>
-                <hr style="border-color: #30363d; margin: 15px 0;">
-                <div class="hn-full">${sanitizeContent(item.fullContent)}</div>
-              `;
-            } else {
-              displayContent = sanitizeContent(item.fullContent || item.content) || '<p><em>No content available</em></p>';
-            }
-
-            // Build links section
-            let linksHtml = '';
-            if (item.link) {
-              linksHtml += `<a href="${escapeHtml(item.link)}" target="_blank" rel="noopener noreferrer" class="article-link">Open original ↗</a>`;
-            }
-            if (item.hnCommentsUrl) {
-              linksHtml += ` <a href="${escapeHtml(item.hnCommentsUrl)}" target="_blank" rel="noopener noreferrer" class="article-link">HN Comments ↗</a>`;
-            }
-
             html += `
               <div class="article ${readClass}" data-id="${escapeHtml(item.id)}">
                 <div class="article-header">
@@ -609,8 +660,7 @@
                 <div class="article-content">
                   <div class="article-progress"><div class="article-progress-bar"></div></div>
                   <div class="article-content-inner">
-                    ${displayContent}
-                    ${linksHtml}
+                    <div class="content-loading">Loading content</div>
                   </div>
                 </div>
               </div>
@@ -622,17 +672,47 @@
       }
 
       content.innerHTML = html;
+      attachEventHandlers();
+    }
 
-      // Add feed header click handlers (collapse/expand)
+    // Load full feed content when needed
+    async function loadFeedContent(feedFile) {
+      if (feedContentCache.has(feedFile)) {
+        return feedContentCache.get(feedFile);
+      }
+
+      try {
+        const res = await fetch(`data/feeds/${feedFile}`);
+        if (!res.ok) throw new Error('Failed to load feed');
+        const data = await res.json();
+        feedContentCache.set(feedFile, data);
+        return data;
+      } catch (err) {
+        console.error('Failed to load feed:', feedFile, err);
+        return null;
+      }
+    }
+
+    // Get full article content for display
+    async function getArticleContent(feedFile, articleId) {
+      const feedData = await loadFeedContent(feedFile);
+      if (!feedData) return null;
+
+      const article = feedData.items.find(item => item.id === articleId);
+      return article || null;
+    }
+
+    function attachEventHandlers() {
+      const content = document.getElementById('content');
+
+      // Feed header click handlers (collapse/expand)
       content.querySelectorAll('.feed-header').forEach(header => {
         header.addEventListener('click', (e) => {
-          // Don't toggle if clicking the mark read button
           if (e.target.classList.contains('feed-mark-read')) return;
 
           const feedGroup = header.parentElement;
           const isCollapsing = !feedGroup.classList.contains('collapsed');
 
-          // If collapsing, also close any open article
           if (isCollapsing) {
             feedGroup.querySelectorAll('.article-content.open').forEach(el => {
               el.classList.remove('open');
@@ -641,7 +721,6 @@
 
           feedGroup.classList.toggle('collapsed');
 
-          // When expanding, scroll the feed header to the top
           if (!isCollapsing) {
             setTimeout(() => {
               header.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -650,7 +729,7 @@
         });
       });
 
-      // Add feed mark read button handlers
+      // Feed mark read button handlers
       content.querySelectorAll('.feed-mark-read').forEach(btn => {
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -658,9 +737,9 @@
         });
       });
 
-      // Add article click handlers
+      // Article click handlers - lazy load content
       content.querySelectorAll('.article-header').forEach(header => {
-        header.addEventListener('click', (e) => {
+        header.addEventListener('click', async (e) => {
           e.stopPropagation();
           const article = header.parentElement;
           const contentEl = article.querySelector('.article-content');
@@ -669,6 +748,7 @@
           const id = article.dataset.id;
           const feedGroup = article.closest('.feed-group');
           const feedTitle = feedGroup.dataset.feed;
+          const feedFile = feedGroup.dataset.file;
 
           const isOpen = contentEl.classList.contains('open');
 
@@ -682,17 +762,48 @@
           if (!isOpen) {
             contentEl.classList.add('open');
 
+            // Check if content is already loaded
+            if (innerEl.querySelector('.content-loading')) {
+              // Load content lazily
+              const articleData = await getArticleContent(feedFile, id);
+
+              if (articleData) {
+                let displayContent;
+                if (articleData.isHackerNews && articleData.fullContent) {
+                  displayContent = `
+                    <div class="hn-preview">${sanitizeContent(articleData.content) || ''}</div>
+                    <hr style="border-color: #30363d; margin: 15px 0;">
+                    <div class="hn-full">${sanitizeContent(articleData.fullContent)}</div>
+                  `;
+                } else {
+                  displayContent = sanitizeContent(articleData.fullContent || articleData.content) || '<p><em>No content available</em></p>';
+                }
+
+                let linksHtml = '';
+                if (articleData.link) {
+                  linksHtml += `<a href="${escapeHtml(articleData.link)}" target="_blank" rel="noopener noreferrer" class="article-link">Open original ↗</a>`;
+                }
+                if (articleData.hnCommentsUrl) {
+                  linksHtml += ` <a href="${escapeHtml(articleData.hnCommentsUrl)}" target="_blank" rel="noopener noreferrer" class="article-link">HN Comments ↗</a>`;
+                }
+
+                innerEl.innerHTML = displayContent + linksHtml;
+              } else {
+                innerEl.innerHTML = '<p><em>Failed to load content</em></p>';
+              }
+            }
+
             // Setup scroll progress tracking
             if (innerEl && progressBar) {
               innerEl.scrollTop = 0;
               progressBar.style.width = '0%';
 
-              innerEl.addEventListener('scroll', function() {
+              innerEl.onscroll = function() {
                 const scrollTop = this.scrollTop;
                 const scrollHeight = this.scrollHeight - this.clientHeight;
                 const progress = scrollHeight > 0 ? (scrollTop / scrollHeight) * 100 : 100;
                 progressBar.style.width = Math.min(100, progress) + '%';
-              });
+              };
             }
 
             if (!article.classList.contains('read')) {
@@ -705,36 +816,54 @@
       });
     }
 
-    function escapeHtml(str) {
-      if (!str) return '';
-      return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-    }
-
-    function sanitizeContent(html) {
-      if (!html) return '';
-      let clean = DOMPurify.sanitize(html, {
-        ALLOWED_TAGS: ['p', 'br', 'b', 'i', 'em', 'strong', 'a', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 'img', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'figure', 'figcaption', 'div', 'span', 'table', 'tr', 'td', 'th', 'tbody', 'thead', 'video', 'iframe', 'source'],
-        ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'style', 'controls', 'allowfullscreen', 'frameborder', 'type'],
-        ALLOW_DATA_ATTR: false,
-        ADD_TAGS: ['iframe'],
-        ADD_ATTR: ['allow', 'allowfullscreen']
-      });
-      clean = clean.replace(/<img /g, '<img loading="lazy" ');
-      clean = clean.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ');
-      return clean;
-    }
-
     async function init() {
       try {
-        const res = await fetch('data/feeds.json');
-        if (!res.ok) throw new Error('Failed to load feeds');
-        data = await res.json();
+        // Try to load the new lightweight index first
+        let res = await fetch('data/feeds-index.json');
 
-        const d = new Date(data.lastUpdated);
+        if (!res.ok) {
+          // Fall back to legacy feeds.json
+          res = await fetch('data/feeds.json');
+          if (!res.ok) throw new Error('Failed to load feeds');
+
+          const legacyData = await res.json();
+          // Convert legacy format to new index format
+          indexData = {
+            lastUpdated: legacyData.lastUpdated,
+            categories: legacyData.categories.map(cat => ({
+              name: cat.name,
+              feeds: cat.feeds.map(feed => ({
+                title: feed.title,
+                url: feed.url,
+                file: null, // Will use embedded items
+                error: feed.error,
+                items: feed.items.map(item => ({
+                  id: item.id,
+                  title: item.title,
+                  date: item.date,
+                  link: item.link,
+                  hnCommentsUrl: item.hnCommentsUrl,
+                  isHackerNews: item.isHackerNews,
+                  isGoogleNews: item.isGoogleNews,
+                  // For legacy mode, include content directly
+                  _content: item.content,
+                  _fullContent: item.fullContent
+                }))
+              }))
+            }))
+          };
+
+          // Cache legacy content
+          for (const cat of legacyData.categories) {
+            for (const feed of cat.feeds) {
+              feedContentCache.set(null, { items: feed.items });
+            }
+          }
+        } else {
+          indexData = await res.json();
+        }
+
+        const d = new Date(indexData.lastUpdated);
         const pad = n => n.toString().padStart(2, '0');
         const formatted = `${pad(d.getDate())}.${pad(d.getMonth()+1)}.${d.getFullYear()}, ${pad(d.getHours())}:${pad(d.getMinutes())}`;
         document.getElementById('updated').textContent = 'Updated: ' + formatted;
